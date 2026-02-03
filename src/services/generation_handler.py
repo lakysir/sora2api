@@ -7,6 +7,7 @@ import random
 import re
 from typing import Optional, AsyncGenerator, Dict, Any
 from datetime import datetime
+from uuid import uuid4
 from .sora_client import SoraClient
 from .token_manager import TokenManager
 from .load_balancer import LoadBalancer
@@ -220,12 +221,298 @@ class GenerationHandler:
         self.token_manager = token_manager
         self.load_balancer = load_balancer
         self.db = db
+        self.proxy_manager = proxy_manager
         self.concurrency_manager = concurrency_manager
         self.file_cache = FileCache(
             cache_dir="tmp",
             default_timeout=config.cache_timeout,
             proxy_manager=proxy_manager
         )
+
+        # =========================
+        # Video polling optimization (per-token)
+        # 说明：submit_video_task() 不再为每个视频任务启动高频轮询；
+        #      改为“当一个 token 上存在任务时”，仅由一个后台协程轮询该 token 的所有任务，
+        #      从而减少 get_pending_tasks/get_video_drafts/post/delete 的调用频率。
+        #      不影响图片轮询与流式接口（_poll_task_result 仍用于 stream 路径）。
+        # =========================
+        self._video_token_state: Dict[int, Dict[str, Any]] = {}  # token_id -> {token: str, tasks: set[str]}
+        self._video_token_pollers: Dict[int, asyncio.Task] = {}  # token_id -> asyncio.Task
+        try:
+            base = float(getattr(config, "poll_interval", 2.5) or 2.5)
+        except Exception:
+            base = 2.5
+        # 单 token 轮询间隔：默认约为原 per-task 间隔的 4 倍，且不低于 8 秒
+        self._video_token_poll_interval: float = max(8.0, base * 6.0)
+        self._video_poller_lock = asyncio.Lock()
+
+    async def _register_video_task_for_token(self, token_id: int, token_value: str, task_id: str):
+        """Register a video task to the per-token poller (start poller if needed)."""
+        if not token_id or not task_id or not token_value:
+            return
+        async with self._video_poller_lock:
+            state = self._video_token_state.get(token_id)
+            if not state:
+                state = {"token": token_value, "tasks": set()}
+                self._video_token_state[token_id] = state
+            # token 可能会刷新，这里以最新值覆盖（同 token_id）
+            state["token"] = token_value
+            state["tasks"].add(task_id)
+
+            t = self._video_token_pollers.get(token_id)
+            if t is None or t.done():
+                self._video_token_pollers[token_id] = asyncio.create_task(self._video_token_poller_loop(token_id))
+
+    async def _video_token_poller_loop(self, token_id: int):
+        """Poll all active video tasks for a token (reduce upstream calls)."""
+        debug_logger.log_info(f"[VideoPoller] started token_id={token_id}, interval={self._video_token_poll_interval}s")
+        try:
+            while True:
+                state = self._video_token_state.get(token_id)
+                if not state:
+                    break
+                tasks_set = state.get("tasks") or set()
+                if not tasks_set:
+                    break
+                token_value = state.get("token") or ""
+                if not token_value:
+                    # 若没有 token，无法继续轮询；等待下一次注册刷新 token
+                    await asyncio.sleep(self._video_token_poll_interval)
+                    continue
+
+                task_ids = list(tasks_set)
+
+                # 0) 超时兜底：超过 video_timeout 的任务直接失败并释放并发
+                try:
+                    timeout_s = float(getattr(config, "video_timeout", 3000) or 3000)
+                except Exception:
+                    timeout_s = 3000.0
+                now_ts = time.time()
+                for tid in task_ids:
+                    try:
+                        t = await self.db.get_task(tid)
+                        if not t:
+                            tasks_set.discard(tid)
+                            continue
+                        # created_at 可能是字符串/datetime，pydantic 通常会解析成 datetime
+                        created_at = getattr(t, "created_at", None)
+                        if created_at:
+                            try:
+                                created_ts = created_at.timestamp()
+                            except Exception:
+                                created_ts = None
+                        else:
+                            created_ts = None
+                        if created_ts and (now_ts - created_ts) > timeout_s and str(getattr(t, "status", "")).lower() == "processing":
+                            await self.db.update_task(tid, "failed", 0, error_message=f"Generation timeout after {timeout_s:.0f} seconds")
+                            tasks_set.discard(tid)
+                            if self.concurrency_manager:
+                                await self.concurrency_manager.release_video(token_id)
+                    except Exception:
+                        # best-effort
+                        continue
+
+                # 若超时处理后无任务，结束
+                if not tasks_set:
+                    break
+
+                # 1) pending：一次查询覆盖该 token 下所有任务
+                pending_tasks = None
+                try:
+                    pending_tasks = await self.sora_client.get_pending_tasks(token_value, token_id=token_id)
+                except Exception as e:
+                    debug_logger.log_error(
+                        error_message=f"[VideoPoller] pending query failed token_id={token_id}: {str(e)}",
+                        status_code=500,
+                        response_text=str(e),
+                    )
+                    await asyncio.sleep(self._video_token_poll_interval)
+                    continue
+
+                pending_map: Dict[str, Any] = {}
+                try:
+                    for it in (pending_tasks or []):
+                        tid = (it or {}).get("id")
+                        if tid:
+                            pending_map[tid] = it
+                except Exception:
+                    pending_map = {}
+
+                candidates: list[str] = []
+                for tid in list(tasks_set):
+                    it = pending_map.get(tid)
+                    if not it:
+                        candidates.append(tid)
+                        continue
+                    try:
+                        progress_pct = it.get("progress_pct")
+                        if progress_pct is None:
+                            pct = 0
+                        else:
+                            pct = int(float(progress_pct) * 100)
+                        pct = max(0, min(100, pct))
+                        await self.db.update_task(tid, "processing", pct)
+                    except Exception:
+                        # ignore per-task update errors
+                        pass
+
+                # 2) drafts：只对“已不在 pending 的任务”做一次 drafts 查询
+                if candidates:
+                    drafts = None
+                    try:
+                        drafts = await self.sora_client.get_video_drafts(token_value, token_id=token_id)
+                    except Exception as e:
+                        debug_logger.log_error(
+                            error_message=f"[VideoPoller] drafts query failed token_id={token_id}: {str(e)}",
+                            status_code=500,
+                            response_text=str(e),
+                        )
+                        await asyncio.sleep(self._video_token_poll_interval)
+                        continue
+
+                    items = (drafts or {}).get("items", []) or []
+                    by_task_id: Dict[str, Any] = {}
+                    for it in items:
+                        try:
+                            k = (it or {}).get("task_id")
+                            if k:
+                                by_task_id[k] = it
+                        except Exception:
+                            continue
+
+                    watermark_config = await self.db.get_watermark_free_config()
+                    watermark_free_enabled = bool(getattr(watermark_config, "watermark_free_enabled", False))
+                    parse_method = (getattr(watermark_config, "parse_method", None) or "third_party").strip().lower()
+
+                    for tid in candidates:
+                        it = by_task_id.get(tid)
+                        if not it:
+                            continue
+
+                        kind = it.get("kind")
+                        reason_str = it.get("reason_str") or it.get("markdown_reason_str")
+                        # 原始带水印链接
+                        source_url = it.get("downloadable_url") or it.get("url")
+                        if source_url:
+                            try:
+                                await self.db.update_task_watermark_fields(tid, source_result_url=source_url)
+                            except Exception:
+                                pass
+
+                        is_violation = (
+                            kind == "sora_content_violation"
+                            or (reason_str and str(reason_str).strip())
+                            or not (it.get("downloadable_url") or it.get("url"))
+                        )
+                        if is_violation:
+                            err = f"Content policy violation: {reason_str or 'Content violates guardrails'}"
+                            await self.db.update_task(tid, "failed", 0, error_message=err)
+                            tasks_set.discard(tid)
+                            if self.concurrency_manager:
+                                await self.concurrency_manager.release_video(token_id)
+                            continue
+
+                        # 读取 prompt（用于 watermark-free publish）
+                        prompt_text = ""
+                        try:
+                            t = await self.db.get_task(tid)
+                            prompt_text = (t.prompt or "") if t else ""
+                        except Exception:
+                            prompt_text = ""
+
+                        final_url = None
+
+                        # watermark-free（可选）
+                        if watermark_free_enabled:
+                            generation_id = it.get("id")
+                            if generation_id:
+                                try:
+                                    post_id = await self.sora_client.post_video_for_watermark_free(
+                                        generation_id=generation_id,
+                                        prompt=prompt_text,
+                                        token=token_value,
+                                    )
+                                    if post_id:
+                                        try:
+                                            await self.db.update_task_watermark_fields(tid, post_id=post_id)
+                                        except Exception:
+                                            pass
+
+                                        if parse_method == "custom":
+                                            if not getattr(watermark_config, "custom_parse_url", None) or not getattr(watermark_config, "custom_parse_token", None):
+                                                raise Exception("Custom parse server URL or token not configured")
+                                            watermark_free_url = await self.sora_client.get_watermark_free_url_custom(
+                                                parse_url=watermark_config.custom_parse_url,
+                                                parse_token=watermark_config.custom_parse_token,
+                                                post_id=post_id,
+                                            )
+                                        else:
+                                            watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
+
+                                        try:
+                                            await self.db.update_task_watermark_fields(tid, watermark_free_url=watermark_free_url)
+                                        except Exception:
+                                            pass
+
+                                        if config.cache_enabled:
+                                            try:
+                                                cached_filename = await self.file_cache.download_and_cache(watermark_free_url, "video", token_id=token_id)
+                                                final_url = f"{self._get_base_url()}/tmp/{cached_filename}"
+                                                # delete published post after caching (best-effort)
+                                                try:
+                                                    await self.sora_client.delete_post(post_id, token_value)
+                                                except Exception:
+                                                    pass
+                                            except Exception:
+                                                final_url = watermark_free_url
+                                        else:
+                                            final_url = watermark_free_url
+                                except Exception as e:
+                                    # watermark-free 失败：若允许 fallback 则继续走带水印；否则直接失败
+                                    if getattr(watermark_config, "fallback_on_failure", True):
+                                        debug_logger.log_error(
+                                            error_message=f"[VideoPoller] watermark-free failed task_id={tid}: {str(e)}",
+                                            status_code=500,
+                                            response_text=str(e),
+                                        )
+                                    else:
+                                        await self.db.update_task(tid, "failed", 0, error_message=f"Watermark-free failed: {str(e)}")
+                                        tasks_set.discard(tid)
+                                        if self.concurrency_manager:
+                                            await self.concurrency_manager.release_video(token_id)
+                                        continue
+
+                        # fallback / normal：用带水印链接完成
+                        if not final_url:
+                            if not source_url:
+                                await self.db.update_task(tid, "failed", 0, error_message="Video URL not found in draft")
+                                tasks_set.discard(tid)
+                                if self.concurrency_manager:
+                                    await self.concurrency_manager.release_video(token_id)
+                                continue
+                            if config.cache_enabled:
+                                try:
+                                    cached_filename = await self.file_cache.download_and_cache(source_url, "video", token_id=token_id)
+                                    final_url = f"{self._get_base_url()}/tmp/{cached_filename}"
+                                except Exception:
+                                    final_url = source_url
+                            else:
+                                final_url = source_url
+
+                        await self.db.update_task(tid, "completed", 100.0, result_urls=json.dumps([final_url]))
+                        tasks_set.discard(tid)
+                        if self.concurrency_manager:
+                            await self.concurrency_manager.release_video(token_id)
+
+                await asyncio.sleep(self._video_token_poll_interval)
+        finally:
+            # Cleanup poller if no active tasks
+            async with self._video_poller_lock:
+                st = self._video_token_state.get(token_id)
+                if not st or not (st.get("tasks") or set()):
+                    self._video_token_state.pop(token_id, None)
+                    self._video_token_pollers.pop(token_id, None)
+            debug_logger.log_info(f"[VideoPoller] stopped token_id={token_id}")
 
     def _get_base_url(self) -> str:
         """Get base URL for cache files"""
@@ -374,7 +661,12 @@ class GenerationHandler:
         """
         from curl_cffi.requests import AsyncSession
 
-        proxy_url = await self.load_balancer.proxy_manager.get_proxy_url()
+        proxy_url = None
+        if self.proxy_manager:
+            try:
+                proxy_url = await self.proxy_manager.get_proxy_url()
+            except Exception:
+                proxy_url = None
 
         kwargs = {
             "timeout": 30,
@@ -546,7 +838,11 @@ class GenerationHandler:
                     )
                     is_first_chunk = False
 
-                image_data = self._decode_base64_image(image)
+                # Support both base64 and remote URL for image input
+                if isinstance(image, str) and (image.startswith("http://") or image.startswith("https://")):
+                    image_data = await self._download_file(image)
+                else:
+                    image_data = self._decode_base64_image(image)
                 media_id = await self.sora_client.upload_image(image_data, token_obj.token)
 
                 if stream:
@@ -963,6 +1259,14 @@ class GenerationHandler:
                         # Find matching task in drafts
                         for item in items:
                             if item.get("task_id") == task_id:
+                                # Capture original (watermarked) url for downstream consumers (e.g. Java)
+                                try:
+                                    source_url = item.get("downloadable_url") or item.get("url")
+                                    if source_url:
+                                        await self.db.update_task_watermark_fields(task_id, source_result_url=source_url)
+                                except Exception:
+                                    pass
+
                                 # Check for content violation
                                 kind = item.get("kind")
                                 reason_str = item.get("reason_str") or item.get("markdown_reason_str")
@@ -1046,6 +1350,12 @@ class GenerationHandler:
                                         if not post_id:
                                             raise Exception("Failed to get post ID from publish API")
 
+                                        # Persist post_id immediately (even if follow-up steps fail)
+                                        try:
+                                            await self.db.update_task_watermark_fields(task_id, post_id=post_id)
+                                        except Exception:
+                                            pass
+
                                         # Get watermark-free video URL based on parse method
                                         if parse_method == "custom":
                                             # Use custom parse server
@@ -1069,6 +1379,12 @@ class GenerationHandler:
                                             debug_logger.log_info(f"Using third-party parse server")
 
                                         debug_logger.log_info(f"Watermark-free URL: {watermark_free_url}")
+
+                                        # Persist watermark-free url for polling clients
+                                        try:
+                                            await self.db.update_task_watermark_fields(task_id, watermark_free_url=watermark_free_url)
+                                        except Exception:
+                                            pass
 
                                         if stream:
                                             yield self._format_stream_chunk(
@@ -1159,6 +1475,12 @@ class GenerationHandler:
                                         raise Exception("Video URL not found in draft")
 
                                     debug_logger.log_info(f"Using original URL from draft: {url[:100]}...")
+
+                                    # Persist original watermarked url for downstream consumers
+                                    try:
+                                        await self.db.update_task_watermark_fields(task_id, source_result_url=url)
+                                    except Exception:
+                                        pass
 
                                     if config.cache_enabled:
                                         # Show appropriate message based on mode
@@ -2158,3 +2480,294 @@ class GenerationHandler:
                 continue
 
         raise Exception(f"Cameo processing timeout after {timeout} seconds")
+
+    # ==================== Task API (non-stream) helpers ====================
+
+    async def _resolve_image_bytes(self, image: str) -> bytes:
+        """Resolve image input to bytes (supports base64/data URI and http(s) URL)."""
+        if image.startswith("http://") or image.startswith("https://"):
+            return await self._download_file(image)
+        return self._decode_base64_image(image)
+
+    async def _resolve_video_bytes(self, video: str) -> bytes:
+        """Resolve video input to bytes (supports base64/data URI and http(s) URL)."""
+        if video.startswith("http://") or video.startswith("https://"):
+            return await self._download_file(video)
+        return self._decode_base64_video(video)
+
+    async def _run_polling_and_release(
+        self,
+        task_id: str,
+        token: str,
+        is_video: bool,
+        prompt: str,
+        token_id: int,
+        release_image_lock: bool,
+    ) -> None:
+        """Background runner: poll upstream, update DB, release resources."""
+        try:
+            async for _ in self._poll_task_result(
+                task_id=task_id,
+                token=token,
+                is_video=is_video,
+                stream=False,
+                prompt=prompt,
+                token_id=token_id,
+            ):
+                # stream=False: generator should not yield, but we must exhaust it
+                pass
+            # Polling completed successfully
+            await self.token_manager.record_success(token_id, is_video=is_video)
+        except Exception as e:
+            # Ensure task marked failed if not already
+            try:
+                await self.db.update_task(task_id, "failed", 0, error_message=str(e))
+            except Exception:
+                pass
+            debug_logger.log_error(
+                error_message=f"Background task failed: {str(e)}",
+                status_code=500,
+                response_text=str(e)
+            )
+        finally:
+            # Release resources
+            try:
+                if release_image_lock:
+                    await self.load_balancer.token_lock.release_lock(token_id)
+                if self.concurrency_manager:
+                    if is_video:
+                        await self.concurrency_manager.release_video(token_id)
+                    else:
+                        await self.concurrency_manager.release_image(token_id)
+            except Exception:
+                # Don't let resource release errors crash background tasks
+                pass
+
+    async def submit_image_task(self, model: str, prompt: str, image: Optional[str] = None) -> str:
+        """Submit an image generation task (text-to-image or image-to-image) and return task_id immediately."""
+        if model not in MODEL_CONFIG:
+            raise ValueError(f"Invalid model: {model}")
+        model_config = MODEL_CONFIG[model]
+        if model_config["type"] != "image":
+            raise ValueError(f"Model {model} is not an image model")
+
+        token_obj = await self.load_balancer.select_token(for_image_generation=True, for_video_generation=False)
+        if not token_obj:
+            raise Exception("No available tokens for image generation")
+
+        # Acquire lock & concurrency for image generation
+        lock_acquired = await self.load_balancer.token_lock.acquire_lock(token_obj.id)
+        if not lock_acquired:
+            raise Exception(f"Failed to acquire lock for token {token_obj.id}")
+        if self.concurrency_manager:
+            concurrency_acquired = await self.concurrency_manager.acquire_image(token_obj.id)
+            if not concurrency_acquired:
+                await self.load_balancer.token_lock.release_lock(token_obj.id)
+                raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+
+        try:
+            media_id = None
+            if image:
+                image_bytes = await self._resolve_image_bytes(image)
+                media_id = await self.sora_client.upload_image(image_bytes, token_obj.token)
+
+            task_id = await self.sora_client.generate_image(
+                prompt=prompt,
+                token=token_obj.token,
+                width=model_config["width"],
+                height=model_config["height"],
+                media_id=media_id,
+                token_id=token_obj.id,
+            )
+
+            await self.db.create_task(
+                Task(
+                    task_id=task_id,
+                    token_id=token_obj.id,
+                    model=model,
+                    prompt=prompt,
+                    status="processing",
+                    progress=0.0,
+                )
+            )
+            await self.token_manager.record_usage(token_obj.id, is_video=False)
+
+            asyncio.create_task(
+                self._run_polling_and_release(
+                    task_id=task_id,
+                    token=token_obj.token,
+                    is_video=False,
+                    prompt=prompt,
+                    token_id=token_obj.id,
+                    release_image_lock=True,
+                )
+            )
+            return task_id
+        except Exception:
+            # Release resources on submit failure
+            await self.load_balancer.token_lock.release_lock(token_obj.id)
+            if self.concurrency_manager:
+                await self.concurrency_manager.release_image(token_obj.id)
+            raise
+
+    async def submit_video_task(self, model: str, prompt: str, image: Optional[str] = None) -> str:
+        """Submit a video generation task (text-to-video or image-to-video) and return task_id immediately."""
+        if model not in MODEL_CONFIG:
+            raise ValueError(f"Invalid model: {model}")
+        model_config = MODEL_CONFIG[model]
+        if model_config["type"] != "video":
+            raise ValueError(f"Model {model} is not a video model")
+
+        require_pro = model_config.get("require_pro", False)
+        token_obj = await self.load_balancer.select_token(
+            for_image_generation=False,
+            for_video_generation=True,
+            require_pro=require_pro,
+        )
+        if not token_obj:
+            if require_pro:
+                raise Exception("No available Pro tokens. Pro models require a ChatGPT Pro subscription.")
+            raise Exception("No available tokens for video generation")
+
+        # Acquire concurrency for video generation
+        if self.concurrency_manager:
+            concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
+            if not concurrency_acquired:
+                raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+
+        try:
+            media_id = None
+            if image:
+                image_bytes = await self._resolve_image_bytes(image)
+                media_id = await self.sora_client.upload_image(image_bytes, token_obj.token)
+
+            # Style & storyboard support (same as streaming path)
+            n_frames = model_config.get("n_frames", 300)
+            clean_prompt, style_id = self._extract_style(prompt)
+
+            if self.sora_client.is_storyboard_prompt(clean_prompt):
+                formatted_prompt = self.sora_client.format_storyboard_prompt(clean_prompt)
+                task_id = await self.sora_client.generate_storyboard(
+                    prompt=formatted_prompt,
+                    token=token_obj.token,
+                    orientation=model_config["orientation"],
+                    media_id=media_id,
+                    n_frames=n_frames,
+                    style_id=style_id,
+                )
+            else:
+                sora_model = model_config.get("model", "sy_8")
+                video_size = model_config.get("size", "small")
+                task_id = await self.sora_client.generate_video(
+                    prompt=clean_prompt,
+                    token=token_obj.token,
+                    orientation=model_config["orientation"],
+                    media_id=media_id,
+                    n_frames=n_frames,
+                    style_id=style_id,
+                    model=sora_model,
+                    size=video_size,
+                    token_id=token_obj.id,
+                )
+
+            await self.db.create_task(
+                Task(
+                    task_id=task_id,
+                    token_id=token_obj.id,
+                    model=model,
+                    prompt=prompt,
+                    status="processing",
+                    progress=0.0,
+                )
+            )
+            await self.token_manager.record_usage(token_obj.id, is_video=True)
+            # 改为：按 token 聚合轮询（避免每个任务独立高频访问 pending/drafts/post/delete）
+            await self._register_video_task_for_token(token_obj.id, token_obj.token, task_id)
+            return task_id
+        except Exception:
+            if self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_obj.id)
+            raise
+
+    async def submit_character_only_task(self, video: str) -> str:
+        """Submit a character-only creation task and return internal task_id immediately."""
+        token_obj = await self.load_balancer.select_token(for_video_generation=True)
+        if not token_obj:
+            raise Exception("No available tokens for character creation")
+
+        # Use video concurrency slot to avoid overloading
+        if self.concurrency_manager:
+            concurrency_acquired = await self.concurrency_manager.acquire_video(token_obj.id)
+            if not concurrency_acquired:
+                raise Exception(f"Failed to acquire concurrency slot for token {token_obj.id}")
+
+        task_id = f"char_{uuid4().hex}"
+
+        await self.db.create_task(
+            Task(
+                task_id=task_id,
+                token_id=token_obj.id,
+                model="character_only",
+                prompt="",
+                status="processing",
+                progress=0.0,
+            )
+        )
+
+        async def _run():
+            try:
+                await self.db.update_task(task_id, "processing", 5.0)
+                video_bytes = await self._resolve_video_bytes(video)
+
+                await self.db.update_task(task_id, "processing", 20.0)
+                cameo_id = await self.sora_client.upload_character_video(video_bytes, token_obj.token)
+
+                await self.db.update_task(task_id, "processing", 40.0)
+                cameo_status = await self._poll_cameo_status(cameo_id, token_obj.token)
+
+                username_hint = cameo_status.get("username_hint", "character")
+                display_name = cameo_status.get("display_name_hint", "Character")
+                username = self._process_character_username(username_hint)
+
+                await self.db.update_task(task_id, "processing", 60.0)
+                profile_asset_url = cameo_status.get("profile_asset_url")
+                if not profile_asset_url:
+                    raise Exception("Profile asset URL not found in cameo status")
+                avatar_data = await self.sora_client.download_character_image(profile_asset_url)
+
+                await self.db.update_task(task_id, "processing", 75.0)
+                asset_pointer = await self.sora_client.upload_character_image(avatar_data, token_obj.token)
+
+                await self.db.update_task(task_id, "processing", 90.0)
+                instruction_set = cameo_status.get("instruction_set_hint") or cameo_status.get("instruction_set")
+                character_id = await self.sora_client.finalize_character(
+                    cameo_id=cameo_id,
+                    username=username,
+                    display_name=display_name,
+                    profile_asset_pointer=asset_pointer,
+                    instruction_set=instruction_set,
+                    token=token_obj.token,
+                )
+                await self.sora_client.set_character_public(cameo_id, token_obj.token)
+
+                await self.db.update_task(
+                    task_id,
+                    "completed",
+                    100.0,
+                    # 兼容：result_urls 为数组；在列表中附加结构化信息，便于外部系统（Java）解析回写
+                    result_urls=json.dumps([
+                        f"@{username}",
+                        f"character_id:{character_id}",
+                        f"cameo_id:{cameo_id}",
+                        f"display_name:{display_name}",
+                        f"avatar_url:{profile_asset_url}",
+                    ]),
+                )
+            except Exception as e:
+                await self.db.update_task(task_id, "failed", 0, error_message=str(e))
+            finally:
+                if self.concurrency_manager:
+                    await self.concurrency_manager.release_video(token_obj.id)
+
+        asyncio.create_task(_run())
+        return task_id

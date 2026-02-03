@@ -2,10 +2,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Any, Dict
 import json
 import re
 import time
+from pydantic import BaseModel
 from ..core.auth import verify_api_key_header
 from ..core.models import ChatCompletionRequest
 from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
@@ -127,6 +128,9 @@ async def create_chat_completion(
                                 image_data = url.split("base64,", 1)[1]
                             else:
                                 image_data = url
+                        else:
+                            # It's a URL, pass it as-is (will be downloaded in generation_handler)
+                            image_data = url
                     elif item.get("type") == "video_url":
                         # Extract video from video_url
                         video_url = item.get("video_url", {})
@@ -322,3 +326,93 @@ async def create_chat_completion(
             status_code=500,
             content=error_response
         )
+
+
+class CreateTaskRequest(BaseModel):
+    """Non-stream task creation request for polling-style clients."""
+    type: str  # text2img/img2img/text2video/img2video/character_only
+    model: Optional[str] = None
+    prompt: Optional[str] = ""
+    image: Optional[str] = None  # base64/data URI/http(s) URL
+    video: Optional[str] = None  # base64/data URI/http(s) URL (for character_only)
+    remix_target_id: Optional[str] = None  # reserved
+
+
+@router.post("/v1/tasks")
+async def create_task(
+    request: CreateTaskRequest,
+    api_key: str = Depends(verify_api_key_header),
+):
+    """Create a generation task and return task_id immediately (poll via GET /v1/tasks/{task_id})."""
+    if generation_handler is None:
+        raise HTTPException(status_code=500, detail="Generation handler not initialized")
+
+    task_type = (request.type or "").strip()
+    prompt = request.prompt or ""
+
+    try:
+        if task_type in ("text2img", "img2img"):
+            if not request.model:
+                raise HTTPException(status_code=400, detail="model is required for image tasks")
+            if not prompt:
+                raise HTTPException(status_code=400, detail="prompt is required for image tasks")
+            image = request.image if task_type == "img2img" else None
+            task_id = await generation_handler.submit_image_task(model=request.model, prompt=prompt, image=image)
+        elif task_type in ("text2video", "img2video"):
+            if not request.model:
+                raise HTTPException(status_code=400, detail="model is required for video tasks")
+            if not prompt:
+                raise HTTPException(status_code=400, detail="prompt is required for video tasks")
+            image = request.image if task_type == "img2video" else None
+            task_id = await generation_handler.submit_video_task(model=request.model, prompt=prompt, image=image)
+        elif task_type == "character_only":
+            if not request.video:
+                raise HTTPException(status_code=400, detail="video is required for character_only")
+            task_id = await generation_handler.submit_character_only_task(video=request.video)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported task type: {task_type}")
+
+        return {"task_id": task_id, "status": "processing"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/v1/tasks/{task_id}")
+async def get_task_status(
+    task_id: str,
+    api_key: str = Depends(verify_api_key_header),
+):
+    """Get task status/progress/result for polling-style clients."""
+    if generation_handler is None:
+        raise HTTPException(status_code=500, detail="Generation handler not initialized")
+
+    task = await generation_handler.db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result_urls: Any = None
+    if task.result_urls:
+        try:
+            result_urls = json.loads(task.result_urls)
+        except Exception:
+            result_urls = task.result_urls
+
+    def _dt(dt: Optional[datetime]) -> Optional[str]:
+        return dt.isoformat() if dt else None
+
+    return {
+        "task_id": task.task_id,
+        "status": task.status,
+        "progress": task.progress,
+        "model": task.model,
+        "prompt": task.prompt,
+        "result_urls": result_urls,
+        "post_id": getattr(task, "post_id", None),
+        "watermark_free_url": getattr(task, "watermark_free_url", None),
+        "source_result_url": getattr(task, "source_result_url", None),
+        "error_message": task.error_message,
+        "created_at": _dt(task.created_at),
+        "completed_at": _dt(task.completed_at),
+    }

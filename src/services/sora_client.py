@@ -1091,7 +1091,7 @@ class SoraClient:
         """Get recent image generation tasks"""
         return await self._make_request("GET", f"/v2/recent_tasks?limit={limit}", token, token_id=token_id)
 
-    async def get_video_drafts(self, token: str, limit: int = 15, token_id: Optional[int] = None) -> Dict[str, Any]:
+    async def get_video_drafts(self, token: str, limit: int = 100, token_id: Optional[int] = None) -> Dict[str, Any]:
         """Get recent video drafts"""
         return await self._make_request("GET", f"/project_y/profile/drafts?limit={limit}", token, token_id=token_id)
 

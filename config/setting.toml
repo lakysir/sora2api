@@ -1,5 +1,5 @@
 [global]
-api_key = "han1234"
+api_key = "mirrmart_sora2_880315"
 admin_username = "admin"
 admin_password = "admin"
 
@@ -42,7 +42,7 @@ proxy_enabled = false
 proxy_url = ""
 
 [watermark_free]
-watermark_free_enabled = false
+watermark_free_enabled = true
 parse_method = "third_party"
 custom_parse_url = ""
 custom_parse_token = ""

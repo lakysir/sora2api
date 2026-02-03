@@ -323,6 +323,21 @@ class Database:
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
 
+            # Check and add missing columns to tasks table (video watermark-free metadata)
+            if await self._table_exists(db, "tasks"):
+                columns_to_add = [
+                    ("post_id", "TEXT"),
+                    ("watermark_free_url", "TEXT"),
+                    ("source_result_url", "TEXT"),
+                ]
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "tasks", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to tasks table")
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
             # Ensure all config tables have their default rows
             # Pass config_dict if available to initialize from setting.toml
             await self._ensure_config_rows(db, config_dict)
@@ -398,6 +413,9 @@ class Database:
                     status TEXT NOT NULL DEFAULT 'processing',
                     progress FLOAT DEFAULT 0,
                     result_urls TEXT,
+                    post_id TEXT,
+                    watermark_free_url TEXT,
+                    source_result_url TEXT,
                     error_message TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     completed_at TIMESTAMP,
@@ -961,6 +979,36 @@ class Database:
                 SET status = ?, progress = ?, result_urls = ?, error_message = ?, completed_at = ?
                 WHERE task_id = ?
             """, (status, progress, result_urls, error_message, completed_at, task_id))
+            await db.commit()
+
+    async def update_task_watermark_fields(
+        self,
+        task_id: str,
+        post_id: Optional[str] = None,
+        watermark_free_url: Optional[str] = None,
+        source_result_url: Optional[str] = None,
+    ):
+        """Update watermark-free related fields for a task (best-effort, partial update)."""
+        if not task_id:
+            return
+        updates = []
+        params = []
+        if post_id is not None:
+            updates.append("post_id = ?")
+            params.append(post_id)
+        if watermark_free_url is not None:
+            updates.append("watermark_free_url = ?")
+            params.append(watermark_free_url)
+        if source_result_url is not None:
+            updates.append("source_result_url = ?")
+            params.append(source_result_url)
+        if not updates:
+            return
+
+        async with aiosqlite.connect(self.db_path) as db:
+            params.append(task_id)
+            query = f"UPDATE tasks SET {', '.join(updates)} WHERE task_id = ?"
+            await db.execute(query, params)
             await db.commit()
     
     async def get_task(self, task_id: str) -> Optional[Task]:

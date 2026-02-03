@@ -65,6 +65,10 @@ class Task(BaseModel):
     status: str = "processing"  # processing/completed/failed
     progress: float = 0.0
     result_urls: Optional[str] = None  # JSON array
+    # Video-only: watermark-free metadata (optional)
+    post_id: Optional[str] = None  # published post id for watermark-free download
+    watermark_free_url: Optional[str] = None  # computed watermark-free url (may be third-party/custom)
+    source_result_url: Optional[str] = None  # original watermarked downloadable_url from drafts
     error_message: Optional[str] = None
     retry_count: int = 0  # 当前重试次数
     created_at: Optional[datetime] = None
