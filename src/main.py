@@ -91,7 +91,14 @@ async def login_page():
 @app.get("/manage", response_class=FileResponse)
 async def manage_page():
     """Serve management page"""
-    return FileResponse(str(static_dir / "manage.html"))
+    return FileResponse(
+        str(static_dir / "manage.html"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 @app.on_event("startup")
 async def startup_event():

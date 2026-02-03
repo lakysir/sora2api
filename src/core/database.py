@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig
+from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, ProxyUrlEntry, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig
 
 class Database:
     """SQLite database manager"""
@@ -234,6 +234,19 @@ class Database:
         """
         async with aiosqlite.connect(self.db_path) as db:
             print("Checking database integrity and performing migrations...")
+
+            # Ensure proxy_urls table exists (proxy URL list for selection/management)
+            if not await self._table_exists(db, "proxy_urls"):
+                await db.execute("""
+                    CREATE TABLE IF NOT EXISTS proxy_urls (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        proxy_url TEXT UNIQUE NOT NULL,
+                        remark TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                print("  ✓ Created table 'proxy_urls'")
 
             # Check and add missing columns to tokens table
             if await self._table_exists(db, "tokens"):
@@ -466,6 +479,17 @@ class Database:
                 )
             """)
 
+            # Proxy URL list table (for UI selection/management)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS proxy_urls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proxy_url TEXT UNIQUE NOT NULL,
+                    remark TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             # Watermark-free config table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS watermark_free_config (
@@ -539,6 +563,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_status ON tasks(status)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_active ON tokens(is_active)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_proxy_urls_url ON proxy_urls(proxy_url)")
 
             # Migration: Add daily statistics columns if they don't exist
             if not await self._column_exists(db, "token_stats", "today_image_count"):
@@ -1145,6 +1170,50 @@ class Database:
                 SET proxy_enabled = ?, proxy_url = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = 1
             """, (enabled, proxy_url))
+            await db.commit()
+
+    # Proxy URL list operations
+    async def get_proxy_urls(self) -> List[ProxyUrlEntry]:
+        """Get all proxy URL entries (latest first)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM proxy_urls ORDER BY id DESC")
+            rows = await cursor.fetchall()
+            return [ProxyUrlEntry(**dict(r)) for r in rows]
+
+    async def add_proxy_url(self, proxy_url: str, remark: Optional[str] = None) -> int:
+        """Add a proxy URL entry and return its id."""
+        proxy_url = (proxy_url or "").strip()
+        if not proxy_url:
+            raise ValueError("proxy_url is required")
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "INSERT INTO proxy_urls (proxy_url, remark) VALUES (?, ?)",
+                (proxy_url, (remark or None)),
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+    async def update_proxy_url(self, proxy_id: int, proxy_url: str, remark: Optional[str] = None):
+        """Update a proxy URL entry."""
+        proxy_url = (proxy_url or "").strip()
+        if not proxy_url:
+            raise ValueError("proxy_url is required")
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE proxy_urls
+                SET proxy_url = ?, remark = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (proxy_url, (remark or None), proxy_id),
+            )
+            await db.commit()
+
+    async def delete_proxy_url(self, proxy_id: int):
+        """Delete a proxy URL entry."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM proxy_urls WHERE id = ?", (proxy_id,))
             await db.commit()
 
     # Watermark-free config operations

@@ -11,15 +11,51 @@ from ..core.models import Token, TokenStats
 from ..core.config import config
 from .proxy_manager import ProxyManager
 from ..core.logger import debug_logger
-
+import uuid
 class TokenManager:
     """Token lifecycle manager"""
+
+    SORA_ORIGIN = "https://sora.chatgpt.com"
+    SORA_REFERER = "https://sora.chatgpt.com/"
 
     def __init__(self, db: Database):
         self.db = db
         self._lock = asyncio.Lock()
         self.proxy_manager = ProxyManager(db)
         self.fake = Faker()
+
+    @classmethod
+    def _sora_base_headers(cls) -> Dict[str, str]:
+        """
+        构造访问 sora.chatgpt.com 时的基础请求头。
+        只补齐必要的 accept/origin/referer，不负责补 cookie。
+        """
+        return {
+            "accept": "application/json",
+            "origin": cls.SORA_ORIGIN,
+            "referer": cls.SORA_REFERER,
+        }
+
+    @classmethod
+    def _sora_headers(
+        cls,
+        *,
+        access_token: Optional[str] = None,
+        content_type: Optional[str] = None,
+        extra: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """
+        在 `_sora_base_headers()` 基础上合并鉴权/内容类型/额外头。
+        注意：cookie 由调用方通过 extra 传入（本方法不主动补 cookie）。
+        """
+        headers = cls._sora_base_headers()
+        if access_token:
+            headers["authorization"] = f"Bearer {access_token}"
+        if content_type:
+            headers["content-type"] = content_type
+        if extra:
+            headers.update(extra)
+        return headers
     
     async def decode_jwt(self, token: str) -> dict:
         """Decode JWT token without verification"""
@@ -63,13 +99,14 @@ class TokenManager:
         """Get user info from Sora API"""
         proxy_url = await self.proxy_manager.get_proxy_url(token_id, proxy_url)
 
+        device_id = str(uuid.uuid4())
         async with AsyncSession() as session:
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json",
-                "Origin": "https://sora.chatgpt.com",
-                "Referer": "https://sora.chatgpt.com/"
-            }
+            # 尽量少塞“浏览器杂头”，让 curl_cffi 的 impersonate 自动补齐 UA/TLS 指纹
+            # 同时加上 oai-did（很多 OpenAI 站点会用它做设备识别）
+            headers = self._sora_headers(
+                access_token=access_token,
+                extra={"cookie": f"oai-did={device_id}"},
+            )
 
             kwargs = {
                 "headers": headers,
@@ -111,10 +148,13 @@ class TokenManager:
         """
         print(f"🔍 开始获取订阅信息...")
         proxy_url = await self.proxy_manager.get_proxy_url(token_id, proxy_url)
+        
 
-        headers = {
-            "Authorization": f"Bearer {token}"
-        }
+        device_id = str(uuid.uuid4())
+        headers = self._sora_headers(
+            access_token=token,
+            extra={"cookie": f"oai-did={device_id}"},
+        )
 
         async with AsyncSession() as session:
             url = "https://sora.chatgpt.com/backend/billing/subscriptions"
@@ -179,10 +219,11 @@ class TokenManager:
         print(f"🔍 开始获取Sora2邀请码...")
 
         async with AsyncSession() as session:
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json"
-            }
+            device_id = str(uuid.uuid4())
+            headers = self._sora_headers(
+                access_token=access_token,
+                extra={"cookie": f"oai-did={device_id}"},
+            )
 
             kwargs = {
                 "headers": headers,
@@ -287,11 +328,11 @@ class TokenManager:
         print(f"🔍 开始获取Sora2剩余次数...")
 
         async with AsyncSession() as session:
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json",
-                "User-Agent" : "Sora/1.2026.007 (Android 15; 24122RKC7C; build 2600700)"
-            }
+            device_id = str(uuid.uuid4())
+            headers = self._sora_headers(
+                access_token=access_token,
+                extra={"cookie": f"oai-did={device_id}"},
+            )
 
             kwargs = {
                 "headers": headers,
@@ -345,10 +386,10 @@ class TokenManager:
         print(f"🔍 检查用户名是否可用: {username}")
 
         async with AsyncSession() as session:
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json"
-            }
+            headers = self._sora_headers(
+                access_token=access_token,
+                content_type="application/json",
+            )
 
             kwargs = {
                 "headers": headers,
@@ -393,10 +434,10 @@ class TokenManager:
         print(f"🔍 开始设置用户名: {username}")
 
         async with AsyncSession() as session:
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json"
-            }
+            headers = self._sora_headers(
+                access_token=access_token,
+                content_type="application/json",
+            )
 
             kwargs = {
                 "headers": headers,
@@ -427,7 +468,6 @@ class TokenManager:
 
     async def activate_sora2_invite(self, access_token: str, invite_code: str) -> dict:
         """Activate Sora2 with invite code"""
-        import uuid
         proxy_url = await self.proxy_manager.get_proxy_url()
 
         print(f"🔍 开始激活Sora2邀请码: {invite_code}")
@@ -438,10 +478,10 @@ class TokenManager:
             device_id = str(uuid.uuid4())
 
             # 只设置必要的头，让 impersonate 处理其他
-            headers = {
-                "authorization": f"Bearer {access_token}",
-                "cookie": f"oai-did={device_id}"
-            }
+            headers = self._sora_headers(
+                access_token=access_token,
+                extra={"cookie": f"oai-did={device_id}"},
+            )
 
             print(f"🆔 设备ID: {device_id}")
             print(f"📦 请求体: {{'invite_code': '{invite_code}'}}")
@@ -482,12 +522,9 @@ class TokenManager:
         proxy_url = await self.proxy_manager.get_proxy_url(proxy_url=proxy_url)
 
         async with AsyncSession() as session:
-            headers = {
-                "Cookie": f"__Secure-next-auth.session-token={session_token}",
-                "Accept": "application/json",
-                "Origin": "https://sora.chatgpt.com",
-                "Referer": "https://sora.chatgpt.com/"
-            }
+            headers = self._sora_headers(
+                extra={"cookie": f"__Secure-next-auth.session-token={session_token}"},
+            )
 
             kwargs = {
                 "headers": headers,
@@ -1039,6 +1076,7 @@ class TokenManager:
                 "sora2_remaining_count": sora2_remaining_count
             }
         except Exception as e:
+            print(f"Failed to test token: {e}")
             error_msg = str(e)
             # Check if error is 401 with token_invalidated
             if "401" in error_msg and "token_invalidated" in error_msg.lower():

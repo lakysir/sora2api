@@ -45,6 +45,7 @@ async def _get_browser(proxy_url: str = None):
         _browser = None
     
     if _browser is None:
+        debug_logger.log_info(f"[Sentinel] Starting browser..............................")
         _playwright = await async_playwright().start()
         launch_args = {
             'headless': True,
@@ -663,7 +664,12 @@ class SoraClient:
         except URLError as exc:
             raise Exception(f"URL Error: {exc}") from exc
 
-    async def _generate_sentinel_token(self, token: Optional[str] = None, user_agent: Optional[str] = None) -> Tuple[str, str]:
+    async def _generate_sentinel_token(
+        self,
+        token: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        proxy_url: Optional[str] = None,
+    ) -> Tuple[str, str]:
         """Generate openai-sentinel-token by calling /backend-api/sentinel/req and solving PoW"""
         req_id = str(uuid4())
         if not user_agent:
@@ -678,7 +684,7 @@ class SoraClient:
         }
         ua_with_pow = f"{user_agent} {json.dumps(init_payload, separators=(',', ':'))}"
 
-        proxy_url = await self.proxy_manager.get_proxy_url()
+        effective_proxy_url = proxy_url or await self.proxy_manager.get_proxy_url()
 
         # Request sentinel/req endpoint
         url = f"{self.CHATGPT_BASE_URL}/backend-api/sentinel/req"
@@ -706,7 +712,7 @@ class SoraClient:
                     url,
                     headers=headers,
                     data=request_body,
-                    proxy=proxy_url,
+                    proxy=effective_proxy_url,
                     timeout=10
                 )
                 if response.status_code != 200:
@@ -1029,11 +1035,16 @@ class SoraClient:
         if config.pow_proxy_enabled:
             pow_proxy_url = config.pow_proxy_url or None
 
+        # Sentinel(oai-did / SDK) 会访问 chatgpt.com：
+        # 某些环境下 chatgpt.com 直连不可达，此处优先用 pow 代理，
+        # 若未配置则回退到 token 级业务代理，避免直连超时。
+        sentinel_proxy_url = pow_proxy_url or proxy_url
+
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         # Try to get cached sentinel token first (using lightweight Playwright approach)
         try:
-            sentinel_token = await _get_cached_sentinel_token(pow_proxy_url, force_refresh=False)
+            sentinel_token = await _get_cached_sentinel_token(sentinel_proxy_url, force_refresh=False)
         except Exception as e:
             # 403/429 errors from oai-did fetch - don't retry, just fail
             error_str = str(e)
@@ -1067,7 +1078,7 @@ class SoraClient:
                 _invalidate_sentinel_cache()
                 
                 try:
-                    sentinel_token = await _get_cached_sentinel_token(pow_proxy_url, force_refresh=True)
+                    sentinel_token = await _get_cached_sentinel_token(sentinel_proxy_url, force_refresh=True)
                 except Exception as refresh_e:
                     # 403/429 errors - don't continue
                     error_str = str(refresh_e)

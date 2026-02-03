@@ -13,7 +13,7 @@ from ..services.token_manager import TokenManager
 from ..services.proxy_manager import ProxyManager
 from ..services.concurrency_manager import ConcurrencyManager
 from ..core.database import Database
-from ..core.models import Token, AdminConfig, ProxyConfig
+from ..core.models import Token, AdminConfig, ProxyConfig, ProxyUrlEntry
 
 router = APIRouter()
 
@@ -77,10 +77,16 @@ class AddTokenRequest(BaseModel):
 
 class ST2ATRequest(BaseModel):
     st: str  # Session Token
+    proxy_url: Optional[str] = None  # Optional: use this proxy for conversion
 
 class RT2ATRequest(BaseModel):
     rt: str  # Refresh Token
     client_id: Optional[str] = None  # Client ID (optional)
+    proxy_url: Optional[str] = None  # Optional: use this proxy for conversion
+
+class ProxyUrlUpsertRequest(BaseModel):
+    proxy_url: str
+    remark: Optional[str] = None
 
 class UpdateTokenStatusRequest(BaseModel):
     is_active: bool
@@ -282,7 +288,7 @@ async def add_token(request: AddTokenRequest, token: str = Depends(verify_admin_
 async def st_to_at(request: ST2ATRequest, token: str = Depends(verify_admin_token)):
     """Convert Session Token to Access Token (only convert, not add to database)"""
     try:
-        result = await token_manager.st_to_at(request.st)
+        result = await token_manager.st_to_at(request.st, proxy_url=request.proxy_url)
         return {
             "success": True,
             "message": "ST converted to AT successfully",
@@ -297,7 +303,7 @@ async def st_to_at(request: ST2ATRequest, token: str = Depends(verify_admin_toke
 async def rt_to_at(request: RT2ATRequest, token: str = Depends(verify_admin_token)):
     """Convert Refresh Token to Access Token (only convert, not add to database)"""
     try:
-        result = await token_manager.rt_to_at(request.rt, client_id=request.client_id)
+        result = await token_manager.rt_to_at(request.rt, client_id=request.client_id, proxy_url=request.proxy_url)
         return {
             "success": True,
             "message": "RT converted to AT successfully",
@@ -305,6 +311,45 @@ async def rt_to_at(request: RT2ATRequest, token: str = Depends(verify_admin_toke
             "refresh_token": result.get("refresh_token"),
             "expires_in": result.get("expires_in")
         }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Proxy URL list management endpoints
+@router.get("/api/proxy/urls")
+async def get_proxy_urls(token: str = Depends(verify_admin_token)) -> List[dict]:
+    """Get proxy URL list for selection/management"""
+    items = await db.get_proxy_urls()
+    return [i.model_dump() if hasattr(i, "model_dump") else dict(i) for i in items]
+
+@router.post("/api/proxy/urls")
+async def add_proxy_url(request: ProxyUrlUpsertRequest, token: str = Depends(verify_admin_token)):
+    """Add a proxy URL entry"""
+    try:
+        new_id = await db.add_proxy_url(request.proxy_url, request.remark)
+        return {"success": True, "id": new_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Likely UNIQUE constraint
+        raise HTTPException(status_code=409, detail=f"代理地址已存在或添加失败: {str(e)}")
+
+@router.put("/api/proxy/urls/{proxy_id}")
+async def update_proxy_url(proxy_id: int, request: ProxyUrlUpsertRequest, token: str = Depends(verify_admin_token)):
+    """Update a proxy URL entry"""
+    try:
+        await db.update_proxy_url(proxy_id, request.proxy_url, request.remark)
+        return {"success": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=409, detail=f"更新失败: {str(e)}")
+
+@router.delete("/api/proxy/urls/{proxy_id}")
+async def delete_proxy_url(proxy_id: int, token: str = Depends(verify_admin_token)):
+    """Delete a proxy URL entry"""
+    try:
+        await db.delete_proxy_url(proxy_id)
+        return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

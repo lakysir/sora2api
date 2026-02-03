@@ -107,6 +107,14 @@ class ProxyConfig(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class ProxyUrlEntry(BaseModel):
+    """Proxy URL entry (for selection/management)"""
+    id: Optional[int] = None
+    proxy_url: str
+    remark: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
 class WatermarkFreeConfig(BaseModel):
     """Watermark-free mode configuration"""
     id: int = 1

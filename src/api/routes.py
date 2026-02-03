@@ -6,10 +6,12 @@ from typing import List, Optional, Any, Dict
 import json
 import re
 import time
+import aiosqlite
 from pydantic import BaseModel
 from ..core.auth import verify_api_key_header
 from ..core.models import ChatCompletionRequest
 from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
+from ..services.sora_client import _generate_sentinel_token_lightweight
 from ..core.logger import debug_logger
 
 router = APIRouter()
@@ -338,6 +340,73 @@ class CreateTaskRequest(BaseModel):
     remix_target_id: Optional[str] = None  # reserved
 
 
+class GetSentinelTokenRequest(BaseModel):
+    """Get sentinel token request.
+
+    Supports multiple naming styles for compatibility:
+    - proxy_url / proxyUrl
+    - use_browser / useBrowser / browser
+    """
+    proxy_url: Optional[str] = None
+    proxyUrl: Optional[str] = None
+    use_browser: Optional[bool] = None
+    useBrowser: Optional[bool] = None
+    browser: Optional[bool] = None
+
+
+@router.post("/v1/sentinel_token")
+async def get_sentinel_token(
+    request: GetSentinelTokenRequest,
+    api_key: str = Depends(verify_api_key_header),
+):
+    """Get sentinel token (browser preferred, fallback to manual PoW).
+
+    Returns:
+        { "sentinel_token": str, "user_agent": str }
+    """
+    if generation_handler is None:
+        raise HTTPException(status_code=500, detail="Generation handler not initialized")
+
+    proxy_url = request.proxy_url or request.proxyUrl
+    use_browser = (
+        request.use_browser
+        if request.use_browser is not None
+        else request.useBrowser
+        if request.useBrowser is not None
+        else request.browser
+        if request.browser is not None
+        else False
+    )
+
+    # Browser UA used by lightweight Playwright path (align with sora_client.py)
+    browser_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+    sentinel_token: Optional[str] = None
+    user_agent: str = browser_user_agent
+
+    # 1) If requested, try browser/cached token first
+    if use_browser:
+        try:
+            sentinel_token = await _generate_sentinel_token_lightweight(proxy_url)
+            if sentinel_token:
+                return {"sentinel_token": sentinel_token, "user_agent": user_agent}
+        except Exception as e:
+            # Any browser failure falls back to manual PoW
+            debug_logger.log_info(f"[Sentinel] Browser token failed, fallback to manual: {e}")
+            sentinel_token = None
+
+    # 2) Manual PoW (always as fallback)
+    try:
+        sentinel_token, user_agent = await generation_handler.sora_client._generate_sentinel_token(
+            token=None,
+            user_agent=None,
+            proxy_url=proxy_url,
+        )
+        return {"sentinel_token": sentinel_token, "user_agent": user_agent}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/v1/tasks")
 async def create_task(
     request: CreateTaskRequest,
@@ -349,6 +418,15 @@ async def create_task(
 
     task_type = (request.type or "").strip()
     prompt = request.prompt or ""
+
+    def _media_meta(v: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Avoid storing large base64 payloads in request_logs."""
+        if not v:
+            return None
+        s = str(v)
+        kind = "url" if (s.startswith("http://") or s.startswith("https://")) else "inline"
+        # Keep only metadata; never store the raw payload here.
+        return {"kind": kind, "length": len(s)}
 
     try:
         if task_type in ("text2img", "img2img"):
@@ -371,6 +449,29 @@ async def create_task(
             task_id = await generation_handler.submit_character_only_task(video=request.video)
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported task type: {task_type}")
+
+        # Best-effort: register request log for admin "请求日志" panel.
+        # Use status_code=-1 to indicate in-progress; task progress is resolved via task_id.
+        try:
+            await generation_handler._log_request(
+                token_id=None,
+                operation=f"create_task:{task_type}",
+                request_data={
+                    "type": task_type,
+                    "model": request.model,
+                    "prompt": prompt,
+                    "image": _media_meta(request.image) if task_type in ("img2img", "img2video") else None,
+                    "video": _media_meta(request.video) if task_type == "character_only" else None,
+                    "remix_target_id": request.remix_target_id,
+                },
+                response_data={},
+                status_code=-1,
+                duration=-1.0,
+                task_id=task_id,
+            )
+        except Exception:
+            # Never block task creation due to logging failure
+            pass
 
         return {"task_id": task_id, "status": "processing"}
     except HTTPException:
@@ -415,4 +516,88 @@ async def get_task_status(
         "error_message": task.error_message,
         "created_at": _dt(task.created_at),
         "completed_at": _dt(task.completed_at),
+    }
+
+
+@router.get("/v1/stats/video-dispatch")
+async def get_video_dispatch_stats(api_key: str = Depends(verify_api_key_header)):
+    """Get dispatch stats for video generation.
+
+    Returns:
+        {
+          "effectiveTokenCount": int,     # 当前可用（可派发）token 数量（视频维度）
+          "globalMax": int,               # 当前可用 token 的最高并发（按 token.video_concurrency 求和，<=0 按 1）
+          "runningTotal": int,            # 当前运行中任务数（tasks.status='processing' 且 model LIKE 'sora2%'）
+          "asOf": "2026-02-03T12:34:56"
+        }
+
+    Notes:
+        - 该接口用于上游（nodeserve / shuzhi-java）做“全局并发”调度判断。
+        - runningTotal 仅统计视频模型（model 前缀 sora2*），避免图片任务影响视频并发调度。
+    """
+    if generation_handler is None:
+        raise HTTPException(status_code=500, detail="Generation handler not initialized")
+
+    now = datetime.now()
+
+    # 1) 计算“当前可用 token 的最高并发”
+    # 口径与 load_balancer(for_video_generation=True) 过滤保持一致（视频启用 + 支持Sora2 + 不在 cooldown）
+    tokens = await generation_handler.token_manager.get_active_tokens()
+
+    effective_tokens = []
+    for t in tokens or []:
+        if t is None or not getattr(t, "id", None):
+            continue
+        if not getattr(t, "video_enabled", False):
+            continue
+        if not getattr(t, "sora2_supported", False):
+            continue
+
+        # cooldown 到期则尝试刷新（失败则按当前值兜底，不让统计接口抛错）
+        cooldown_until = getattr(t, "sora2_cooldown_until", None)
+        if cooldown_until and cooldown_until <= now:
+            try:
+                await generation_handler.token_manager.refresh_sora2_remaining_if_cooldown_expired(t.id)
+                t = await generation_handler.db.get_token(t.id) or t
+            except Exception:
+                pass
+
+        cooldown_until = getattr(t, "sora2_cooldown_until", None)
+        if cooldown_until and cooldown_until > now:
+            continue
+
+        effective_tokens.append(t)
+
+    def _norm_concurrency(c: Optional[int]) -> int:
+        # 约定：video_concurrency 非正数（含 -1 不限制）在“最高并发统计”中按 1 计，避免出现无限并发。
+        if c is None or c <= 0:
+            return 1
+        return int(c)
+
+    global_max = 0
+    for t in effective_tokens:
+        try:
+            global_max += _norm_concurrency(getattr(t, "video_concurrency", None))
+        except Exception:
+            global_max += 1
+
+    # 2) 统计 runningTotal（processing 的 sora2 视频任务）
+    running_total = 0
+    try:
+        async with aiosqlite.connect(generation_handler.db.db_path) as db:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = ? AND model LIKE ?",
+                ("processing", "sora2%"),
+            )
+            row = await cur.fetchone()
+            running_total = int(row[0] or 0) if row else 0
+    except Exception:
+        # 统计失败不影响主流程：返回 0（上游会更保守地不派发）
+        running_total = 0
+
+    return {
+        "effectiveTokenCount": len(effective_tokens),
+        "globalMax": int(global_max),
+        "runningTotal": int(running_total),
+        "asOf": now.isoformat(),
     }
