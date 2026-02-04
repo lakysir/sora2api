@@ -4,7 +4,21 @@ import json
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, ProxyUrlEntry, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig
+from .models import (
+    Token,
+    TokenStats,
+    Task,
+    RequestLog,
+    AdminConfig,
+    ProxyConfig,
+    ProxyUrlEntry,
+    WatermarkFreeConfig,
+    CacheConfig,
+    GenerationConfig,
+    TokenRefreshConfig,
+    CallLogicConfig,
+    PowProxyConfig,
+)
 
 class Database:
     """SQLite database manager"""
@@ -211,6 +225,7 @@ class Database:
             # Get POW proxy config from config_dict if provided, otherwise use defaults
             pow_proxy_enabled = False
             pow_proxy_url = None
+            pow_sentinel_use_chrome = True
 
             if config_dict:
                 pow_proxy_config = config_dict.get("pow_proxy", {})
@@ -218,11 +233,12 @@ class Database:
                 pow_proxy_url = pow_proxy_config.get("pow_proxy_url", "")
                 # Convert empty string to None
                 pow_proxy_url = pow_proxy_url if pow_proxy_url else None
+                pow_sentinel_use_chrome = pow_proxy_config.get("pow_sentinel_use_chrome", True)
 
             await db.execute("""
-                INSERT INTO pow_proxy_config (id, pow_proxy_enabled, pow_proxy_url)
-                VALUES (1, ?, ?)
-            """, (pow_proxy_enabled, pow_proxy_url))
+                INSERT INTO pow_proxy_config (id, pow_proxy_enabled, pow_proxy_url, pow_sentinel_use_chrome)
+                VALUES (1, ?, ?, ?)
+            """, (pow_proxy_enabled, pow_proxy_url, pow_sentinel_use_chrome))
 
 
     async def check_and_migrate_db(self, config_dict: dict = None):
@@ -348,6 +364,19 @@ class Database:
                         try:
                             await db.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_type}")
                             print(f"  ✓ Added column '{col_name}' to tasks table")
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
+            # Check and add missing columns to pow_proxy_config table
+            if await self._table_exists(db, "pow_proxy_config"):
+                columns_to_add = [
+                    ("pow_sentinel_use_chrome", "BOOLEAN DEFAULT 1"),
+                ]
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "pow_proxy_config", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE pow_proxy_config ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to pow_proxy_config table")
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
 
@@ -554,6 +583,7 @@ class Database:
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     pow_proxy_enabled BOOLEAN DEFAULT 0,
                     pow_proxy_url TEXT,
+                    pow_sentinel_use_chrome BOOLEAN DEFAULT 1,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -586,6 +616,10 @@ class Database:
                 await db.execute("ALTER TABLE admin_config ADD COLUMN task_max_retries INTEGER DEFAULT 3")
             if not await self._column_exists(db, "admin_config", "auto_disable_on_401"):
                 await db.execute("ALTER TABLE admin_config ADD COLUMN auto_disable_on_401 BOOLEAN DEFAULT 1")
+
+            # Migration: Add pow_sentinel_use_chrome column to pow_proxy_config table if it doesn't exist
+            if not await self._column_exists(db, "pow_proxy_config", "pow_sentinel_use_chrome"):
+                await db.execute("ALTER TABLE pow_proxy_config ADD COLUMN pow_sentinel_use_chrome BOOLEAN DEFAULT 1")
 
             await db.commit()
 
@@ -1355,9 +1389,8 @@ class Database:
             await db.commit()
 
     # Call logic config operations
-    async def get_call_logic_config(self) -> "CallLogicConfig":
+    async def get_call_logic_config(self) -> CallLogicConfig:
         """Get call logic configuration"""
-        from .models import CallLogicConfig
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM call_logic_config WHERE id = 1")
@@ -1382,24 +1415,28 @@ class Database:
             await db.commit()
 
     # POW proxy config operations
-    async def get_pow_proxy_config(self) -> "PowProxyConfig":
+    async def get_pow_proxy_config(self) -> PowProxyConfig:
         """Get POW proxy configuration"""
-        from .models import PowProxyConfig
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM pow_proxy_config WHERE id = 1")
             row = await cursor.fetchone()
             if row:
                 return PowProxyConfig(**dict(row))
-            return PowProxyConfig(pow_proxy_enabled=False, pow_proxy_url=None)
+            return PowProxyConfig(pow_proxy_enabled=False, pow_proxy_url=None, pow_sentinel_use_chrome=True)
 
-    async def update_pow_proxy_config(self, pow_proxy_enabled: bool, pow_proxy_url: Optional[str] = None):
+    async def update_pow_proxy_config(
+        self,
+        pow_proxy_enabled: bool,
+        pow_proxy_url: Optional[str] = None,
+        pow_sentinel_use_chrome: bool = True,
+    ):
         """Update POW proxy configuration"""
         async with aiosqlite.connect(self.db_path) as db:
             # Use INSERT OR REPLACE to ensure the row exists
             await db.execute("""
-                INSERT OR REPLACE INTO pow_proxy_config (id, pow_proxy_enabled, pow_proxy_url, updated_at)
-                VALUES (1, ?, ?, CURRENT_TIMESTAMP)
-            """, (pow_proxy_enabled, pow_proxy_url))
+                INSERT OR REPLACE INTO pow_proxy_config (id, pow_proxy_enabled, pow_proxy_url, pow_sentinel_use_chrome, updated_at)
+                VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (pow_proxy_enabled, pow_proxy_url, bool(pow_sentinel_use_chrome)))
             await db.commit()
 

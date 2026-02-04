@@ -1042,26 +1042,38 @@ class SoraClient:
 
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-        # Try to get cached sentinel token first (using lightweight Playwright approach)
-        try:
-            sentinel_token = await _get_cached_sentinel_token(sentinel_proxy_url, force_refresh=False)
-        except Exception as e:
-            # 403/429 errors from oai-did fetch - don't retry, just fail
-            error_str = str(e)
-            if "403" in error_str or "429" in error_str:
-                debug_logger.log_error(
-                    error_message=f"Failed to get sentinel token: {error_str}",
-                    status_code=403 if "403" in error_str else 429,
-                    response_text=error_str,
-                    source="Server"
-                )
-                raise
-            sentinel_token = None
+        use_chrome_sentinel = getattr(config, "pow_sentinel_use_chrome", True)
+        sentinel_token = None
+
+        if use_chrome_sentinel:
+            # Chrome 获取（轻量 Playwright + 缓存）
+            try:
+                sentinel_token = await _get_cached_sentinel_token(sentinel_proxy_url, force_refresh=False)
+            except Exception as e:
+                # 403/429 errors from oai-did fetch - don't retry, just fail
+                error_str = str(e)
+                if "403" in error_str or "429" in error_str:
+                    debug_logger.log_error(
+                        error_message=f"Failed to get sentinel token: {error_str}",
+                        status_code=403 if "403" in error_str else 429,
+                        response_text=error_str,
+                        source="Server"
+                    )
+                    #raise
+                sentinel_token = None
+        else:
+            debug_logger.log_info("[Sentinel] Chrome获取已关闭，使用本地PoW计算 sentinel token")
 
         if not sentinel_token:
-            # Fallback to manual POW if lightweight approach fails
-            debug_logger.log_info("[Warning] Lightweight sentinel token failed, falling back to manual POW")
-            sentinel_token, user_agent = await self._generate_sentinel_token(token)
+            # 本地 PoW 计算（或 Chrome 获取失败的兜底）
+            if use_chrome_sentinel:
+                debug_logger.log_info("[Warning] Lightweight sentinel token failed, falling back to manual POW")
+            sentinel_token, user_agent = await self._generate_sentinel_token(
+                token=token,
+                user_agent=user_agent,
+                proxy_url=sentinel_proxy_url,
+                token_id=token_id,
+            )
 
         # First attempt with cached/generated token
         try:
@@ -1076,25 +1088,6 @@ class SoraClient:
                 
                 # Invalidate cache and get fresh token
                 _invalidate_sentinel_cache()
-                
-                try:
-                    sentinel_token = await _get_cached_sentinel_token(sentinel_proxy_url, force_refresh=True)
-                except Exception as refresh_e:
-                    # 403/429 errors - don't continue
-                    error_str = str(refresh_e)
-                    if "403" in error_str or "429" in error_str:
-                        raise refresh_e
-                    sentinel_token = None
-                
-                if not sentinel_token:
-                    # Fallback to manual POW
-                    debug_logger.log_info("[Warning] Refresh failed, falling back to manual POW")
-                    sentinel_token, user_agent = await self._generate_sentinel_token(token)
-                
-                # Retry with fresh token
-                result = await self._nf_create_urllib(token, json_data, sentinel_token, proxy_url, token_id, user_agent)
-                return result["id"]
-            
             # For other errors, just re-raise
             raise
     

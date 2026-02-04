@@ -258,5 +258,16 @@ class Config:
             self._config["pow_proxy"] = {}
         self._config["pow_proxy"]["pow_proxy_url"] = url
 
+    @property
+    def pow_sentinel_use_chrome(self) -> bool:
+        """Sentinel Token 获取方式：True=Chrome(Playwright)获取；False=本地PoW计算"""
+        return self._config.get("pow_proxy", {}).get("pow_sentinel_use_chrome", True)
+
+    def set_pow_sentinel_use_chrome(self, enabled: bool):
+        """设置 Sentinel Token 获取方式（True=Chrome获取；False=本地计算）"""
+        if "pow_proxy" not in self._config:
+            self._config["pow_proxy"] = {}
+        self._config["pow_proxy"]["pow_sentinel_use_chrome"] = bool(enabled)
+
 # Global config instance
 config = Config()

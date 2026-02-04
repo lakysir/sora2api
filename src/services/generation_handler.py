@@ -284,7 +284,7 @@ class GenerationHandler:
 
                 # 0) 超时兜底：超过 video_timeout 的任务直接失败并释放并发
                 try:
-                    timeout_s = float(getattr(config, "video_timeout", 3000) or 3000)
+                    timeout_s = float(getattr(config, "video_timeout", 600) or 600)
                 except Exception:
                     timeout_s = 3000.0
                 now_ts = time.time()

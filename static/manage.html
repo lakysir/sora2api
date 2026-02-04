@@ -3,7 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>管理控制台 - Sora2API</title>
+    <!-- 禁用缓存：避免反向代理/浏览器缓存导致页面不更新 -->
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>管理控制台 - Sora2API1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @keyframes slide-up{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
@@ -390,9 +394,39 @@
                     </div>
                 </div>
 
-                <!-- POW代理配置 -->
+                <!-- 代理网址管理 -->
                 <div class="rounded-lg border border-border bg-background p-6">
-                    <h3 class="text-lg font-semibold mb-4">POW代理配置</h3>
+                    <div class="flex items-center justify-between gap-3 mb-4">
+                        <h3 class="text-lg font-semibold">代理网址管理</h3>
+                        <button onclick="openProxyUrlModal()" class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4">
+                            新增代理
+                        </button>
+                    </div>
+                    <div class="text-xs text-muted-foreground mb-3">
+                        用于 Token 新增/编辑时快速选择代理地址（不会影响“系统代理配置”开关）。
+                    </div>
+                    <div class="relative w-full overflow-auto border border-border rounded-md">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b border-border bg-muted/30">
+                                    <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground w-20">ID</th>
+                                    <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">代理地址</th>
+                                    <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">备注</th>
+                                    <th class="h-10 px-3 text-right align-middle font-medium text-muted-foreground w-32">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="proxyUrlsTableBody" class="divide-y divide-border">
+                                <tr>
+                                    <td class="py-3 px-3 text-xs text-muted-foreground" colspan="4">请先打开“系统配置”加载数据</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- POW配置 -->
+                <div class="rounded-lg border border-border bg-background p-6">
+                    <h3 class="text-lg font-semibold mb-4">POW配置</h3>
                     <div class="space-y-4">
                         <div>
                             <label class="inline-flex items-center gap-2 cursor-pointer">
@@ -400,6 +434,13 @@
                                 <span class="text-sm font-medium">启用POW代理</span>
                             </label>
                             <p class="text-xs text-muted-foreground mt-1">获取 Sentinel Token 时使用的代理</p>
+                        </div>
+                        <div>
+                            <label class="inline-flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="cfgPowSentinelUseChrome" class="h-4 w-4 rounded border-input">
+                                <span class="text-sm font-medium">Chrome获取 Sentinel Token</span>
+                            </label>
+                            <p class="text-xs text-muted-foreground mt-1">开启：走 Playwright/Chrome 获取并缓存；关闭：仅本地 PoW 计算（不启动浏览器）</p>
                         </div>
                         <div>
                             <label class="text-sm font-medium mb-2 block">POW代理地址</label>
@@ -660,6 +701,9 @@
         <!-- 页脚 -->
         <footer class="mt-12 pt-6 border-t border-border text-center text-xs text-muted-foreground">
             <p>© 2025 <a href="https://linux.do/u/thesmallhancat/summary" target="_blank" class="no-underline hover:underline" style="color: inherit;">TheSmallHanCat</a> && <a href="https://linux.do/u/tibbar/summary" target="_blank" class="no-underline hover:underline" style="color: inherit;">Tibbar</a>. All rights reserved.</p>
+            <p class="mt-2">
+                UI版本：<span id="uiVersionValue" class="font-mono"></span>
+            </p>
         </footer>
     </main>
 
@@ -718,8 +762,11 @@
                 <!-- Proxy URL -->
                 <div class="space-y-2">
                     <label class="text-sm font-medium">代理 <span class="text-muted-foreground text-xs">- 可选</span></label>
-                    <input id="addTokenProxyUrl" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
-                    <p class="text-xs text-muted-foreground">支持 http 和 socks5 代理，留空使用系统设置的代理</p>
+                    <input id="addTokenProxyUrl" readonly onclick="openProxySelectModal('add')" class="cursor-pointer flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono" placeholder="点击选择代理地址（可留空）">
+                    <div class="flex items-center justify-between">
+                        <p class="text-xs text-muted-foreground">点击输入框从“代理网址管理”中选择；留空将使用系统设置的代理</p>
+                        <button onclick="$('addTokenProxyUrl').value=''" class="text-xs text-muted-foreground hover:text-foreground underline">清空</button>
+                    </div>
                 </div>
 
                 <!-- Remark -->
@@ -821,8 +868,11 @@
                 <!-- Proxy URL -->
                 <div class="space-y-2">
                     <label class="text-sm font-medium">代理 <span class="text-muted-foreground text-xs">- 可选</span></label>
-                    <input id="editTokenProxyUrl" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
-                    <p class="text-xs text-muted-foreground">支持 http 和 socks5 代理，留空使用系统设置的代理</p>
+                    <input id="editTokenProxyUrl" readonly onclick="openProxySelectModal('edit')" class="cursor-pointer flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono" placeholder="点击选择代理地址（可留空）">
+                    <div class="flex items-center justify-between">
+                        <p class="text-xs text-muted-foreground">点击输入框从“代理网址管理”中选择；留空将使用系统设置的代理</p>
+                        <button onclick="$('editTokenProxyUrl').value=''" class="text-xs text-muted-foreground hover:text-foreground underline">清空</button>
+                    </div>
                 </div>
 
                 <!-- Remark -->
@@ -1031,8 +1081,78 @@
         </div>
     </div>
 
+    <!-- 代理选择模态框（用于 Token 新增/编辑） -->
+    <div id="proxySelectModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div class="bg-background rounded-lg border border-border w-full max-w-2xl shadow-xl max-h-[80vh] flex flex-col">
+            <div class="flex items-center justify-between p-5 border-b border-border">
+                <h3 class="text-lg font-semibold">选择代理地址</h3>
+                <button onclick="closeProxySelectModal()" class="text-muted-foreground hover:text-foreground">
+                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-5 overflow-y-auto">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-xs text-muted-foreground">点击一行即可选择；列表在“代理网址管理”中维护</div>
+                    <button onclick="selectProxyUrl('')" class="text-xs text-muted-foreground hover:text-foreground underline">不使用代理（清空）</button>
+                </div>
+                <div class="relative w-full overflow-auto border border-border rounded-md">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-border bg-muted/30">
+                                <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground w-20">ID</th>
+                                <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">代理地址</th>
+                                <th class="h-10 px-3 text-left align-middle font-medium text-muted-foreground">备注</th>
+                            </tr>
+                        </thead>
+                        <tbody id="proxySelectTableBody" class="divide-y divide-border">
+                            <tr>
+                                <td class="py-3 px-3 text-xs text-muted-foreground" colspan="3">加载中...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="flex items-center justify-end gap-3 p-5 border-t border-border">
+                <button onclick="closeProxySelectModal()" class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-9 px-5">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 代理网址新增/编辑模态框 -->
+    <div id="proxyUrlModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div class="bg-background rounded-lg border border-border w-full max-w-md shadow-xl">
+            <div class="flex items-center justify-between p-5 border-b border-border">
+                <h3 id="proxyUrlModalTitle" class="text-lg font-semibold">新增代理</h3>
+                <button onclick="closeProxyUrlModal()" class="text-muted-foreground hover:text-foreground">
+                    <svg class="h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="p-5 space-y-4">
+                <input type="hidden" id="proxyUrlId">
+                <div>
+                    <label class="text-sm font-medium mb-2 block">代理地址 <span class="text-red-500">*</span></label>
+                    <input id="proxyUrlValue" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
+                </div>
+                <div>
+                    <label class="text-sm font-medium mb-2 block">备注</label>
+                    <input id="proxyUrlRemark" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="可选备注">
+                </div>
+            </div>
+            <div class="flex items-center justify-end gap-3 p-5 border-t border-border">
+                <button onclick="closeProxyUrlModal()" class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-9 px-5">取消</button>
+                <button onclick="submitProxyUrl()" class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-5">保存</button>
+            </div>
+        </div>
+    </div>
+
     <script>
-        let allTokens=[],currentPage=1,pageSize=20,selectedTokenIds=new Set(),currentStatusFilter='';
+        let allTokens=[],currentPage=1,pageSize=20,selectedTokenIds=new Set(),currentStatusFilter='',allProxyUrls=[],proxySelectTargetInputId='';
         const $=(id)=>document.getElementById(id),
         checkAuth=()=>{const t=localStorage.getItem('adminToken');return t||(location.href='/login',null),t},
         apiRequest=async(url,opts={})=>{const t=checkAuth();if(!t)return null;const r=await fetch(url,{...opts,headers:{...opts.headers,Authorization:`Bearer ${t}`,'Content-Type':'application/json'}});return r.status===401?(localStorage.removeItem('adminToken'),location.href='/login',null):r},
@@ -1058,10 +1178,10 @@
         openEditModal=(id)=>{const token=allTokens.find(t=>t.id===id);if(!token)return showToast('Token不存在','error');$('editTokenId').value=token.id;$('editTokenAT').value=token.token||'';$('editTokenST').value=token.st||'';$('editTokenRT').value=token.rt||'';$('editTokenClientId').value=token.client_id||'';$('editTokenProxyUrl').value=token.proxy_url||'';$('editTokenRemark').value=token.remark||'';$('editTokenImageEnabled').checked=token.image_enabled!==false;$('editTokenVideoEnabled').checked=token.video_enabled!==false;$('editTokenImageConcurrency').value=token.image_concurrency||'-1';$('editTokenVideoConcurrency').value=token.video_concurrency||'-1';$('editModal').classList.remove('hidden')},
         closeEditModal=()=>{$('editModal').classList.add('hidden');$('editTokenId').value='';$('editTokenAT').value='';$('editTokenST').value='';$('editTokenRT').value='';$('editTokenClientId').value='';$('editTokenProxyUrl').value='';$('editTokenRemark').value='';$('editTokenImageEnabled').checked=true;$('editTokenVideoEnabled').checked=true;$('editTokenImageConcurrency').value='';$('editTokenVideoConcurrency').value='';$('editRTRefreshHint').classList.add('hidden')},
         submitEditToken=async()=>{const id=parseInt($('editTokenId').value),at=$('editTokenAT').value.trim(),st=$('editTokenST').value.trim(),rt=$('editTokenRT').value.trim(),clientId=$('editTokenClientId').value.trim(),proxyUrl=$('editTokenProxyUrl').value.trim(),remark=$('editTokenRemark').value.trim(),imageEnabled=$('editTokenImageEnabled').checked,videoEnabled=$('editTokenVideoEnabled').checked,imageConcurrency=$('editTokenImageConcurrency').value?parseInt($('editTokenImageConcurrency').value):null,videoConcurrency=$('editTokenVideoConcurrency').value?parseInt($('editTokenVideoConcurrency').value):null;if(!id)return showToast('Token ID无效','error');if(!at)return showToast('请输入 Access Token','error');const btn=$('editTokenBtn'),btnText=$('editTokenBtnText'),btnSpinner=$('editTokenBtnSpinner');btn.disabled=true;btnText.textContent='保存中...';btnSpinner.classList.remove('hidden');try{const r=await apiRequest(`/api/tokens/${id}`,{method:'PUT',body:JSON.stringify({token:at,st:st||null,rt:rt||null,client_id:clientId||null,proxy_url:proxyUrl||'',remark:remark||null,image_enabled:imageEnabled,video_enabled:videoEnabled,image_concurrency:imageConcurrency,video_concurrency:videoConcurrency})});if(!r){btn.disabled=false;btnText.textContent='保存';btnSpinner.classList.add('hidden');return}const d=await r.json();if(d.success){closeEditModal();await refreshTokens();showToast('Token更新成功','success')}else{showToast('更新失败: '+(d.detail||d.message||'未知错误'),'error')}}catch(e){showToast('更新失败: '+e.message,'error')}finally{btn.disabled=false;btnText.textContent='保存';btnSpinner.classList.add('hidden')}},
-        convertST2AT=async()=>{const st=$('addTokenST').value.trim();if(!st)return showToast('请先输入 Session Token','error');try{showToast('正在转换 ST→AT...','info');const r=await apiRequest('/api/tokens/st2at',{method:'POST',body:JSON.stringify({st:st})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('addTokenAT').value=d.access_token;showToast('转换成功！AT已自动填入','success')}else{showToast('转换失败: '+(d.message||d.detail||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
-        convertRT2AT=async()=>{const rt=$('addTokenRT').value.trim();if(!rt)return showToast('请先输入 Refresh Token','error');const clientId=$('addTokenClientId').value.trim();const hint=$('addRTRefreshHint');hint.classList.add('hidden');try{showToast('正在转换 RT→AT...','info');const r=await apiRequest('/api/tokens/rt2at',{method:'POST',body:JSON.stringify({rt:rt,client_id:clientId||null})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('addTokenAT').value=d.access_token;if(d.refresh_token){$('addTokenRT').value=d.refresh_token;hint.classList.remove('hidden');showToast('转换成功！AT已自动填入，RT已被刷新并更新','success')}else{showToast('转换成功！AT已自动填入','success')}}else{showToast('转换失败: '+(d.message||d.detail||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
-        convertEditST2AT=async()=>{const st=$('editTokenST').value.trim();if(!st)return showToast('请先输入 Session Token','error');try{showToast('正在转换 ST→AT...','info');const r=await apiRequest('/api/tokens/st2at',{method:'POST',body:JSON.stringify({st:st})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('editTokenAT').value=d.access_token;showToast('转换成功！AT已自动填入','success')}else{showToast('转换失败: '+(d.message||d.detail||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
-        convertEditRT2AT=async()=>{const rt=$('editTokenRT').value.trim();if(!rt)return showToast('请先输入 Refresh Token','error');const clientId=$('editTokenClientId').value.trim();const hint=$('editRTRefreshHint');hint.classList.add('hidden');try{showToast('正在转换 RT→AT...','info');const r=await apiRequest('/api/tokens/rt2at',{method:'POST',body:JSON.stringify({rt:rt,client_id:clientId||null})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('editTokenAT').value=d.access_token;if(d.refresh_token){$('editTokenRT').value=d.refresh_token;hint.classList.remove('hidden');showToast('转换成功！AT已自动填入，RT已被刷新并更新','success')}else{showToast('转换成功！AT已自动填入','success')}}else{showToast('转换失败: '+(d.message||d.detail||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
+        convertST2AT=async()=>{const st=$('addTokenST').value.trim();if(!st)return showToast('请先输入 Session Token','error');const proxyUrl=$('addTokenProxyUrl').value.trim();try{showToast('正在转换 ST→AT...','info');const r=await apiRequest('/api/tokens/st2at',{method:'POST',body:JSON.stringify({st:st,proxy_url:proxyUrl||null})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('addTokenAT').value=d.access_token;showToast('转换成功！AT已自动填入','success')}else{showToast('转换失败: '+(d.message||d.detail||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
+        convertRT2AT=async()=>{const rt=$('addTokenRT').value.trim();if(!rt)return showToast('请先输入 Refresh Token','error');const clientId=$('addTokenClientId').value.trim();const proxyUrl=$('addTokenProxyUrl').value.trim();const hint=$('addRTRefreshHint');hint.classList.add('hidden');try{showToast('正在转换 RT→AT...','info');const r=await apiRequest('/api/tokens/rt2at',{method:'POST',body:JSON.stringify({rt:rt,client_id:clientId||null,proxy_url:proxyUrl||null})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('addTokenAT').value=d.access_token;if(d.refresh_token){$('addTokenRT').value=d.refresh_token;hint.classList.remove('hidden');showToast('转换成功！AT已自动填入，RT已被刷新并更新','success')}else{showToast('转换成功！AT已自动填入','success')}}else{showToast('转换失败: '+(d.message||d.detail||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
+        convertEditST2AT=async()=>{const st=$('editTokenST').value.trim();if(!st)return showToast('请先输入 Session Token','error');const proxyUrl=$('editTokenProxyUrl').value.trim();try{showToast('正在转换 ST→AT...','info');const r=await apiRequest('/api/tokens/st2at',{method:'POST',body:JSON.stringify({st:st,proxy_url:proxyUrl||null})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('editTokenAT').value=d.access_token;showToast('转换成功！AT已自动填入','success')}else{showToast('转换失败: '+(d.message||d.detail||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
+        convertEditRT2AT=async()=>{const rt=$('editTokenRT').value.trim();if(!rt)return showToast('请先输入 Refresh Token','error');const clientId=$('editTokenClientId').value.trim();const proxyUrl=$('editTokenProxyUrl').value.trim();const hint=$('editRTRefreshHint');hint.classList.add('hidden');try{showToast('正在转换 RT→AT...','info');const r=await apiRequest('/api/tokens/rt2at',{method:'POST',body:JSON.stringify({rt:rt,client_id:clientId||null,proxy_url:proxyUrl||null})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('editTokenAT').value=d.access_token;if(d.refresh_token){$('editTokenRT').value=d.refresh_token;hint.classList.remove('hidden');showToast('转换成功！AT已自动填入，RT已被刷新并更新','success')}else{showToast('转换成功！AT已自动填入','success')}}else{showToast('转换失败: '+(d.message||d.detail||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
         submitAddToken=async()=>{const at=$('addTokenAT').value.trim(),st=$('addTokenST').value.trim(),rt=$('addTokenRT').value.trim(),clientId=$('addTokenClientId').value.trim(),proxyUrl=$('addTokenProxyUrl').value.trim(),remark=$('addTokenRemark').value.trim(),imageEnabled=$('addTokenImageEnabled').checked,videoEnabled=$('addTokenVideoEnabled').checked,imageConcurrency=parseInt($('addTokenImageConcurrency').value)||(-1),videoConcurrency=parseInt($('addTokenVideoConcurrency').value)||(-1);if(!at)return showToast('请输入 Access Token 或使用 ST/RT 转换','error');const btn=$('addTokenBtn'),btnText=$('addTokenBtnText'),btnSpinner=$('addTokenBtnSpinner');btn.disabled=true;btnText.textContent='添加中...';btnSpinner.classList.remove('hidden');try{const r=await apiRequest('/api/tokens',{method:'POST',body:JSON.stringify({token:at,st:st||null,rt:rt||null,client_id:clientId||null,proxy_url:proxyUrl||'',remark:remark||null,image_enabled:imageEnabled,video_enabled:videoEnabled,image_concurrency:imageConcurrency,video_concurrency:videoConcurrency})});if(!r){btn.disabled=false;btnText.textContent='添加';btnSpinner.classList.add('hidden');return}if(r.status===409){const d=await r.json();const msg=d.detail||'Token 已存在';btn.disabled=false;btnText.textContent='添加';btnSpinner.classList.add('hidden');if(confirm(msg+'\n\n是否删除旧 Token 后重新添加？')){const existingToken=allTokens.find(t=>t.token===at);if(existingToken){const deleted=await deleteToken(existingToken.id,true);if(deleted){showToast('正在重新添加...','info');setTimeout(()=>submitAddToken(),500)}else{showToast('删除旧 Token 失败','error')}}}return}const d=await r.json();if(d.success){closeAddModal();await refreshTokens();showToast('Token添加成功','success')}else{showToast('添加失败: '+(d.detail||d.message||'未知错误'),'error')}}catch(e){showToast('添加失败: '+e.message,'error')}finally{btn.disabled=false;btnText.textContent='添加';btnSpinner.classList.add('hidden')}},
         testToken=async(id)=>{try{showToast('正在测试Token...','info');const r=await apiRequest(`/api/tokens/${id}/test`,{method:'POST'});if(!r)return;const d=await r.json();if(d.success&&d.status==='success'){let msg=`Token有效！用户: ${d.email||'未知'}`;if(d.sora2_supported){const remaining=d.sora2_total_count-d.sora2_redeemed_count;msg+=`\nSora2: 支持 (${remaining}/${d.sora2_total_count})`;if(d.sora2_remaining_count!==undefined){msg+=`\n可用次数: ${d.sora2_remaining_count}`}}showToast(msg,'success');await refreshTokens()}else{showToast(`Token无效: ${d.message||'未知错误'}`,'error')}}catch(e){showToast('测试失败: '+e.message,'error')}},
         toggleToken=async(id,isActive)=>{const action=isActive?'disable':'enable';try{const r=await apiRequest(`/api/tokens/${id}/${action}`,{method:'POST'});if(!r)return;const d=await r.json();d.success?(await refreshTokens(),showToast(isActive?'Token已禁用':'Token已启用','success')):showToast('操作失败','error')}catch(e){showToast('操作失败: '+e.message,'error')}},
@@ -1118,9 +1238,155 @@
         deleteCharacter=async(id)=>{if(!confirm('确定要删除这个角色卡吗?'))return;try{const r=await apiRequest(`/api/characters/${id}`,{method:'DELETE'});if(!r)return;const d=await r.json();if(d.success){showToast('删除成功','success');await loadCharacters()}else{showToast('删除失败','error')}}catch(e){showToast('删除失败: '+e.message,'error')}},
         loadCallLogicConfig=async()=>{try{const r=await apiRequest('/api/call-logic/config');if(!r)return;const d=await r.json();if(d.success&&d.config){const mode=d.config.call_mode||((d.config.polling_mode_enabled||false)?'polling':'default');$('cfgCallLogicMode').value=mode}else{console.error('调用逻辑配置数据格式错误:',d)}}catch(e){console.error('加载调用逻辑配置失败:',e)}},
         saveCallLogicConfig=async()=>{try{const mode=$('cfgCallLogicMode').value||'default';const r=await apiRequest('/api/call-logic/config',{method:'POST',body:JSON.stringify({call_mode:mode})});if(!r)return;const d=await r.json();if(d.success){showToast('调用逻辑配置保存成功','success')}else{showToast('保存失败','error')}}catch(e){showToast('保存失败: '+e.message,'error')}},
-        loadPowProxyConfig=async()=>{try{const r=await apiRequest('/api/pow-proxy/config');if(!r)return;const d=await r.json();if(d.success&&d.config){$('cfgPowProxyEnabled').checked=d.config.pow_proxy_enabled||false;$('cfgPowProxyUrl').value=d.config.pow_proxy_url||''}else{console.error('POW代理配置数据格式错误:',d)}}catch(e){console.error('加载POW代理配置失败:',e)}},
-        savePowProxyConfig=async()=>{try{const r=await apiRequest('/api/pow-proxy/config',{method:'POST',body:JSON.stringify({pow_proxy_enabled:$('cfgPowProxyEnabled').checked,pow_proxy_url:$('cfgPowProxyUrl').value.trim()})});if(!r)return;const d=await r.json();if(d.success){showToast('POW代理配置保存成功','success')}else{showToast('保存失败','error')}}catch(e){showToast('保存失败: '+e.message,'error')}},
-        switchTab=t=>{const cap=n=>n.charAt(0).toUpperCase()+n.slice(1);['tokens','settings','logs','generate'].forEach(n=>{const active=n===t;$(`panel${cap(n)}`).classList.toggle('hidden',!active);$(`tab${cap(n)}`).classList.toggle('border-primary',active);$(`tab${cap(n)}`).classList.toggle('text-primary',active);$(`tab${cap(n)}`).classList.toggle('border-transparent',!active);$(`tab${cap(n)}`).classList.toggle('text-muted-foreground',!active)});if(t==='settings'){loadAdminConfig();loadProxyConfig();loadPowProxyConfig();loadWatermarkFreeConfig();loadCacheConfig();loadGenerationTimeout();loadATAutoRefreshConfig();loadCallLogicConfig()}else if(t==='logs'){loadLogs()}};
+        loadPowProxyConfig=async()=>{try{const r=await apiRequest('/api/pow-proxy/config');if(!r)return;const d=await r.json();if(d.success&&d.config){$('cfgPowProxyEnabled').checked=d.config.pow_proxy_enabled||false;$('cfgPowProxyUrl').value=d.config.pow_proxy_url||'';$('cfgPowSentinelUseChrome').checked=d.config.pow_sentinel_use_chrome!==undefined?!!d.config.pow_sentinel_use_chrome:true}else{console.error('POW配置数据格式错误:',d)}}catch(e){console.error('加载POW配置失败:',e)}},
+        savePowProxyConfig=async()=>{try{const r=await apiRequest('/api/pow-proxy/config',{method:'POST',body:JSON.stringify({pow_proxy_enabled:$('cfgPowProxyEnabled').checked,pow_proxy_url:$('cfgPowProxyUrl').value.trim(),pow_sentinel_use_chrome:$('cfgPowSentinelUseChrome').checked})});if(!r)return;const d=await r.json();if(d.success){showToast('POW配置保存成功','success')}else{showToast('保存失败','error')}}catch(e){showToast('保存失败: '+e.message,'error')}},
+        switchTab=t=>{const cap=n=>n.charAt(0).toUpperCase()+n.slice(1);['tokens','settings','logs','generate'].forEach(n=>{const active=n===t;$(`panel${cap(n)}`).classList.toggle('hidden',!active);$(`tab${cap(n)}`).classList.toggle('border-primary',active);$(`tab${cap(n)}`).classList.toggle('text-primary',active);$(`tab${cap(n)}`).classList.toggle('border-transparent',!active);$(`tab${cap(n)}`).classList.toggle('text-muted-foreground',!active)});if(t==='settings'){loadAdminConfig();loadProxyConfig();loadProxyUrls();loadPowProxyConfig();loadWatermarkFreeConfig();loadCacheConfig();loadGenerationTimeout();loadATAutoRefreshConfig();loadCallLogicConfig()}else if(t==='logs'){loadLogs()}};
+
+        // 代理网址管理 & 选择（全局函数，供 HTML onclick 调用）
+        async function loadProxyUrls(){
+            try{
+                const r=await apiRequest('/api/proxy/urls');
+                if(!r)return;
+                allProxyUrls=await r.json();
+                renderProxyUrlsTable();
+            }catch(e){
+                console.error('加载代理网址列表失败:',e);
+            }
+        }
+
+        function renderProxyUrlsTable(){
+            const tb=$('proxyUrlsTableBody');
+            if(!tb)return;
+            const rows=Array.isArray(allProxyUrls)?allProxyUrls:[];
+            if(rows.length===0){
+                tb.innerHTML='<tr><td class="py-3 px-3 text-xs text-muted-foreground" colspan="4">暂无代理地址，请点击右上角“新增代理”</td></tr>';
+                return;
+            }
+            tb.innerHTML=rows.map(p=>{
+                const url=(p.proxy_url||'');
+                const safeUrl=url.replace(/'/g,"\\'");
+                return `<tr>
+                    <td class="py-2.5 px-3 text-xs text-muted-foreground">${p.id}</td>
+                    <td class="py-2.5 px-3">
+                        <span class="text-xs font-mono cursor-pointer hover:text-primary" title="${url}" onclick="navigator.clipboard.writeText('${safeUrl}').then(()=>showToast('已复制','success'))">${url}</span>
+                    </td>
+                    <td class="py-2.5 px-3 text-xs text-muted-foreground">${p.remark||'-'}</td>
+                    <td class="py-2.5 px-3 text-right">
+                        <button onclick="openProxyUrlModal(${p.id})" class="inline-flex items-center justify-center rounded-md hover:bg-green-50 hover:text-green-700 h-7 px-2 text-xs mr-1">编辑</button>
+                        <button onclick="deleteProxyUrl(${p.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        function openProxyUrlModal(id=null){
+            const modal=$('proxyUrlModal');
+            if(!modal)return;
+            if(id){
+                const item=(allProxyUrls||[]).find(x=>x.id===id);
+                if(!item)return showToast('代理不存在','error');
+                $('proxyUrlModalTitle').textContent='编辑代理';
+                $('proxyUrlId').value=String(item.id);
+                $('proxyUrlValue').value=item.proxy_url||'';
+                $('proxyUrlRemark').value=item.remark||'';
+            }else{
+                $('proxyUrlModalTitle').textContent='新增代理';
+                $('proxyUrlId').value='';
+                $('proxyUrlValue').value='';
+                $('proxyUrlRemark').value='';
+            }
+            modal.classList.remove('hidden');
+        }
+
+        function closeProxyUrlModal(){
+            const modal=$('proxyUrlModal');
+            if(!modal)return;
+            modal.classList.add('hidden');
+            $('proxyUrlId').value='';
+            $('proxyUrlValue').value='';
+            $('proxyUrlRemark').value='';
+        }
+
+        async function submitProxyUrl(){
+            const idStr=$('proxyUrlId').value.trim();
+            const proxyUrl=$('proxyUrlValue').value.trim();
+            const remark=$('proxyUrlRemark').value.trim();
+            if(!proxyUrl)return showToast('请输入代理地址','error');
+            try{
+                const url=idStr?`/api/proxy/urls/${parseInt(idStr)}`:'/api/proxy/urls';
+                const method=idStr?'PUT':'POST';
+                const r=await apiRequest(url,{method:method,body:JSON.stringify({proxy_url:proxyUrl,remark:remark||null})});
+                if(!r)return;
+                const d=await r.json();
+                if(d.success){
+                    closeProxyUrlModal();
+                    await loadProxyUrls();
+                    showToast('保存成功','success');
+                }else{
+                    showToast('保存失败: '+(d.detail||d.message||'未知错误'),'error');
+                }
+            }catch(e){
+                showToast('保存失败: '+e.message,'error');
+            }
+        }
+
+        async function deleteProxyUrl(id){
+            if(!confirm('确定要删除这个代理地址吗？'))return;
+            try{
+                const r=await apiRequest(`/api/proxy/urls/${id}`,{method:'DELETE'});
+                if(!r)return;
+                const d=await r.json();
+                if(d.success){
+                    await loadProxyUrls();
+                    showToast('删除成功','success');
+                }else{
+                    showToast('删除失败','error');
+                }
+            }catch(e){
+                showToast('删除失败: '+e.message,'error');
+            }
+        }
+
+        async function openProxySelectModal(target){
+            proxySelectTargetInputId=target==='edit'?'editTokenProxyUrl':'addTokenProxyUrl';
+            $('proxySelectModal').classList.remove('hidden');
+            if(!Array.isArray(allProxyUrls)||allProxyUrls.length===0){
+                await loadProxyUrls();
+            }
+            renderProxySelectTable();
+        }
+
+        function closeProxySelectModal(){
+            $('proxySelectModal').classList.add('hidden');
+            proxySelectTargetInputId='';
+        }
+
+        function renderProxySelectTable(){
+            const tb=$('proxySelectTableBody');
+            if(!tb)return;
+            const rows=Array.isArray(allProxyUrls)?allProxyUrls:[];
+            if(rows.length===0){
+                tb.innerHTML='<tr><td class="py-3 px-3 text-xs text-muted-foreground" colspan="3">暂无代理地址，请先在“代理网址管理”里新增</td></tr>';
+                return;
+            }
+            tb.innerHTML=rows.map(p=>{
+                const url=(p.proxy_url||'');
+                const safeUrl=url.replace(/'/g,"\\'");
+                return `<tr class="hover:bg-accent cursor-pointer" onclick="selectProxyUrl('${safeUrl}')">
+                    <td class="py-2.5 px-3 text-xs text-muted-foreground">${p.id}</td>
+                    <td class="py-2.5 px-3 text-xs font-mono">${url}</td>
+                    <td class="py-2.5 px-3 text-xs text-muted-foreground">${p.remark||'-'}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        function selectProxyUrl(url){
+            const inputId=proxySelectTargetInputId;
+            const input=inputId?$(inputId):null;
+            if(input)input.value=url||'';
+            closeProxySelectModal();
+            showToast(url?'已选择代理':'已清空代理','success');
+        }
         // 自适应生成面板 iframe 高度
         window.addEventListener('message', (event) => {
             const data = event.data || {};
@@ -1141,7 +1407,15 @@
                 dropdown.classList.add('hidden');
             }
         });
-        window.addEventListener('DOMContentLoaded',()=>{checkAuth();refreshTokens();loadATAutoRefreshConfig()});
+        window.addEventListener('DOMContentLoaded',()=>{
+            // 固定版本号：用来确认是否加载到了最新 manage.html
+            const UI_VERSION = "2026-02-03_proxy-url-manager_v1";
+            const el = $('uiVersionValue');
+            if (el) el.textContent = UI_VERSION;
+            checkAuth();
+            refreshTokens();
+            loadATAutoRefreshConfig();
+        });
     </script>
 </body>
 </html>

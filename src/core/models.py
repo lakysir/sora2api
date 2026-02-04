@@ -163,6 +163,8 @@ class PowProxyConfig(BaseModel):
     id: int = 1
     pow_proxy_enabled: bool = False  # Whether to enable POW proxy
     pow_proxy_url: Optional[str] = None  # POW proxy URL (e.g., http://127.0.0.1:7890)
+    # Sentinel Token 获取方式：True=Chrome(Playwright)获取；False=本地PoW计算
+    pow_sentinel_use_chrome: bool = True
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

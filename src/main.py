@@ -151,6 +151,12 @@ async def startup_event():
     config.set_call_logic_mode(call_logic_config.call_mode)
     print(f"✓ Call logic mode: {call_logic_config.call_mode}")
 
+    # Load POW configuration from database (proxy + sentinel token method)
+    pow_config = await db.get_pow_proxy_config()
+    config.set_pow_proxy_enabled(pow_config.pow_proxy_enabled)
+    config.set_pow_proxy_url(pow_config.pow_proxy_url or "")
+    config.set_pow_sentinel_use_chrome(getattr(pow_config, "pow_sentinel_use_chrome", True))
+
     # Initialize concurrency manager with all tokens
     all_tokens = await db.get_all_tokens()
     await concurrency_manager.initialize(all_tokens)

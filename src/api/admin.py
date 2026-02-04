@@ -176,6 +176,8 @@ class UpdateCallLogicConfigRequest(BaseModel):
 class UpdatePowProxyConfigRequest(BaseModel):
     pow_proxy_enabled: bool
     pow_proxy_url: Optional[str] = None
+    # True=Chrome获取sentinel_token；False=本地PoW计算（不启动浏览器）
+    pow_sentinel_use_chrome: Optional[bool] = None
 
 class BatchDisableRequest(BaseModel):
     token_ids: List[int]
@@ -1427,7 +1429,8 @@ async def get_pow_proxy_config(token: str = Depends(verify_admin_token)) -> dict
         "success": True,
         "config": {
             "pow_proxy_enabled": config_obj.pow_proxy_enabled,
-            "pow_proxy_url": config_obj.pow_proxy_url or ""
+            "pow_proxy_url": config_obj.pow_proxy_url or "",
+            "pow_sentinel_use_chrome": getattr(config_obj, "pow_sentinel_use_chrome", True)
         }
     }
 
@@ -1438,12 +1441,24 @@ async def update_pow_proxy_config(
 ):
     """Update POW proxy configuration"""
     try:
-        await db.update_pow_proxy_config(request.pow_proxy_enabled, request.pow_proxy_url)
+        current = await db.get_pow_proxy_config()
+        pow_sentinel_use_chrome = (
+            request.pow_sentinel_use_chrome
+            if request.pow_sentinel_use_chrome is not None
+            else getattr(current, "pow_sentinel_use_chrome", True)
+        )
+
+        await db.update_pow_proxy_config(
+            request.pow_proxy_enabled,
+            request.pow_proxy_url,
+            pow_sentinel_use_chrome=pow_sentinel_use_chrome,
+        )
         config.set_pow_proxy_enabled(request.pow_proxy_enabled)
         config.set_pow_proxy_url(request.pow_proxy_url or "")
+        config.set_pow_sentinel_use_chrome(pow_sentinel_use_chrome)
         return {
             "success": True,
-            "message": "POW proxy configuration updated"
+            "message": "POW configuration updated"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update POW proxy configuration: {str(e)}")
