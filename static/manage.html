@@ -375,7 +375,7 @@
                         </div>
                         <div>
                             <label class="text-sm font-medium mb-2 block">代理地址</label>
-                            <input id="cfgProxyUrl" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
+                            <input id="cfgProxyUrl" onclick="openProxySelectModalByInputId('cfgProxyUrl')" class="flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080">
                             <p class="text-xs text-muted-foreground mt-1">支持 HTTP 和 SOCKS5 代理</p>
                         </div>
                         <div>
@@ -1213,7 +1213,7 @@
         downloadDebugLogs=async()=>{try{const token=localStorage.getItem('adminToken');if(!token){showToast('未登录','error');return}const r=await fetch('/api/admin/logs/download',{headers:{Authorization:`Bearer ${token}`}});if(!r.ok){if(r.status===404){showToast('日志文件不存在','error')}else{showToast('下载失败','error')}return}const blob=await r.blob();const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=`logs_${new Date().toISOString().split('T')[0]}.txt`;document.body.appendChild(link);link.click();document.body.removeChild(link);URL.revokeObjectURL(url);showToast('日志文件下载成功','success')}catch(e){showToast('下载失败: '+e.message,'error')}},
         loadProxyConfig=async()=>{try{const r=await apiRequest('/api/proxy/config');if(!r)return;const d=await r.json();$('cfgProxyEnabled').checked=d.proxy_enabled||false;$('cfgProxyUrl').value=d.proxy_url||''}catch(e){console.error('加载代理配置失败:',e)}},
         setProxyStatus=(msg,type='muted')=>{const el=$('proxyStatusMessage');if(!el)return;if(!msg){el.textContent='';el.classList.add('hidden');return}el.textContent=msg;el.classList.remove('hidden','text-muted-foreground','text-green-600','text-red-600');if(type==='success')el.classList.add('text-green-600');else if(type==='error')el.classList.add('text-red-600');else el.classList.add('text-muted-foreground')},
-        testProxyConfig=async()=>{const enabled=$('cfgProxyEnabled').checked;const url=$('cfgProxyUrl').value.trim();const testUrl=$('cfgProxyTestUrl').value.trim()||'https://sora.chatgpt.com';if(!enabled||!url){setProxyStatus('代理未启用或地址为空','error');return}try{setProxyStatus('正在测试代理连接...','muted');const r=await apiRequest('/api/proxy/test',{method:'POST',body:JSON.stringify({test_url:testUrl})});if(!r)return;const d=await r.json();if(d.success){setProxyStatus(`✓ ${d.message||'代理可用'} - 测试域名: ${d.test_url||testUrl}`,'success')}else{setProxyStatus(`✗ ${d.message||'代理不可用'} - 测试域名: ${d.test_url||testUrl}`,'error')}}catch(e){setProxyStatus('代理测试失败: '+e.message,'error')}},
+        testProxyConfig=async()=>{const enabled=$('cfgProxyEnabled').checked;const url=$('cfgProxyUrl').value.trim();const testUrl=$('cfgProxyTestUrl').value.trim()||'https://sora.chatgpt.com';if(!url){setProxyStatus('代理地址为空','error');return}try{const tip=enabled?'正在测试代理连接...':'代理未启用（仅测试输入框地址连通性）...';setProxyStatus(tip,'muted');const r=await apiRequest('/api/proxy/test',{method:'POST',body:JSON.stringify({test_url:testUrl,proxy_url:url})});if(!r)return;const d=await r.json();if(d.success){setProxyStatus(`✓ ${d.message||'代理可用'} - 测试域名: ${d.test_url||testUrl}`,'success')}else{setProxyStatus(`✗ ${d.message||'代理不可用'} - 测试域名: ${d.test_url||testUrl}`,'error')}}catch(e){setProxyStatus('代理测试失败: '+e.message,'error')}},
         saveProxyConfig=async()=>{try{const r=await apiRequest('/api/proxy/config',{method:'POST',body:JSON.stringify({proxy_enabled:$('cfgProxyEnabled').checked,proxy_url:$('cfgProxyUrl').value.trim()})});if(!r)return;const d=await r.json();d.success?showToast('代理配置保存成功','success'):showToast('保存失败','error')}catch(e){showToast('保存失败: '+e.message,'error')}},
         loadWatermarkFreeConfig=async()=>{try{const r=await apiRequest('/api/watermark-free/config');if(!r)return;const d=await r.json();$('cfgWatermarkFreeEnabled').checked=d.watermark_free_enabled||false;$('cfgParseMethod').value=d.parse_method||'third_party';$('cfgCustomParseUrl').value=d.custom_parse_url||'';$('cfgCustomParseToken').value=d.custom_parse_token||'';$('cfgFallbackOnFailure').checked=d.fallback_on_failure!==false;toggleWatermarkFreeOptions();toggleCustomParseOptions()}catch(e){console.error('加载无水印模式配置失败:',e)}},
         saveWatermarkFreeConfig=async()=>{try{const enabled=$('cfgWatermarkFreeEnabled').checked,parseMethod=$('cfgParseMethod').value,customUrl=$('cfgCustomParseUrl').value.trim(),customToken=$('cfgCustomParseToken').value.trim(),fallbackOnFailure=$('cfgFallbackOnFailure').checked;if(enabled&&parseMethod==='custom'){if(!customUrl)return showToast('请输入解析服务器地址','error');if(!customToken)return showToast('请输入访问密钥','error')}const r=await apiRequest('/api/watermark-free/config',{method:'POST',body:JSON.stringify({watermark_free_enabled:enabled,parse_method:parseMethod,custom_parse_url:customUrl||null,custom_parse_token:customToken||null,fallback_on_failure:fallbackOnFailure})});if(!r)return;const d=await r.json();d.success?showToast('无水印模式配置保存成功','success'):showToast('保存失败','error')}catch(e){showToast('保存失败: '+e.message,'error')}},
@@ -1349,6 +1349,11 @@
 
         async function openProxySelectModal(target){
             proxySelectTargetInputId=target==='edit'?'editTokenProxyUrl':'addTokenProxyUrl';
+            await openProxySelectModalByInputId(proxySelectTargetInputId);
+        }
+
+        async function openProxySelectModalByInputId(inputId){
+            proxySelectTargetInputId=inputId||'';
             $('proxySelectModal').classList.remove('hidden');
             if(!Array.isArray(allProxyUrls)||allProxyUrls.length===0){
                 await loadProxyUrls();

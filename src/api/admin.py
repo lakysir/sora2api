@@ -140,6 +140,8 @@ class UpdateProxyConfigRequest(BaseModel):
 
 class TestProxyRequest(BaseModel):
     test_url: Optional[str] = "https://sora.chatgpt.com"
+    # If provided, use this proxy url to test without saving config
+    proxy_url: Optional[str] = None
 
 class UpdateAdminPasswordRequest(BaseModel):
     old_password: str
@@ -1002,9 +1004,14 @@ async def test_proxy_config(
     """Test proxy connectivity with custom URL"""
     from curl_cffi.requests import AsyncSession
 
-    config_obj = await proxy_manager.get_proxy_config()
-    if not config_obj.proxy_enabled or not config_obj.proxy_url:
-        return {"success": False, "message": "代理未启用或地址为空"}
+    proxy_url = (request.proxy_url or "").strip()
+    if not proxy_url:
+        config_obj = await proxy_manager.get_proxy_config()
+        if not config_obj.proxy_enabled or not config_obj.proxy_url:
+            return {"success": False, "message": "代理未启用或地址为空"}
+        proxy_url = (config_obj.proxy_url or "").strip()
+        if not proxy_url:
+            return {"success": False, "message": "代理地址为空"}
 
     # Use provided test URL or default
     test_url = request.test_url or "https://sora.chatgpt.com"
@@ -1015,7 +1022,7 @@ async def test_proxy_config(
                 test_url,
                 timeout=15,
                 impersonate="chrome",
-                proxy=config_obj.proxy_url
+                proxy=proxy_url
             )
         status_code = response.status_code
         if 200 <= status_code < 400:
@@ -1023,19 +1030,22 @@ async def test_proxy_config(
                 "success": True,
                 "message": f"代理可用 (HTTP {status_code})",
                 "status_code": status_code,
-                "test_url": test_url
+                "test_url": test_url,
+                "proxy_url": proxy_url
             }
         return {
             "success": False,
             "message": f"代理响应异常: HTTP {status_code}",
             "status_code": status_code,
-            "test_url": test_url
+            "test_url": test_url,
+            "proxy_url": proxy_url
         }
     except Exception as e:
         return {
             "success": False,
             "message": f"代理连接失败: {str(e)}",
-            "test_url": test_url
+            "test_url": test_url,
+            "proxy_url": proxy_url
         }
 
 # Watermark-free config endpoints
