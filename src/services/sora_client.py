@@ -35,6 +35,83 @@ _cached_sentinel_token = None
 _cached_device_id = None
 
 
+def _try_build_cloudflare_challenge_error(
+    *,
+    status_code: int,
+    url: str,
+    body_text: str,
+    headers: Optional[dict] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect Cloudflare "Just a moment..." / challenge pages and return
+    a structured OpenAI-compatible error payload.
+
+    We intentionally avoid returning the full HTML to clients.
+    """
+    if status_code not in (403, 429):
+        return None
+
+    text = (body_text or "").strip()
+    if not text:
+        return None
+
+    lower = text.lower()
+    markers = (
+        "just a moment",
+        "enable javascript and cookies to continue",
+        "__cf_chl",
+        "cf_chl",
+        "cloudflare",
+        "managed challenge",
+        "challenge-error-text",
+    )
+    if not any(m in lower for m in markers):
+        return None
+
+    hdrs = headers or {}
+
+    ray = ""
+    try:
+        ray = (hdrs.get("cf-ray") or hdrs.get("CF-RAY") or "").strip()
+    except Exception:
+        ray = ""
+
+    if not ray:
+        # Common Cloudflare challenge JS snippet contains cRay: '...'
+        m = re.search(r"cRay:\s*'([^']+)'", text)
+        if m:
+            ray = m.group(1).strip()
+
+    zone = ""
+    m = re.search(r"cZone:\s*'([^']+)'", text)
+    if m:
+        zone = m.group(1).strip()
+
+    msg = "403 Cloudflare challenge：上游返回验证页（需要 JS/Cookie），当前出口 IP/代理可能被风控拦截。"
+    if status_code == 429:
+        msg = "429 Cloudflare / Rate Limit：上游触发限流或挑战页，当前出口 IP/代理可能被风控。"
+
+    if ray:
+        msg += f" cf-ray={ray}"
+    if zone:
+        msg += f" zone={zone}"
+
+    return {
+        "error": {
+            "message": msg,
+            "type": "upstream_blocked",
+            "param": None,
+            "code": "cf_challenge_403" if status_code == 403 else "cf_shield_429",
+            "details": {
+                "status_code": status_code,
+                "url": url,
+                "cf_ray": ray or None,
+                "zone": zone or None,
+            },
+        }
+    }
+
+
 async def _get_browser(proxy_url: str = None):
     """Get or create browser instance (reuses existing browser)"""
     global _browser, _playwright, _current_proxy
@@ -497,6 +574,14 @@ class SoraClient:
             return json.loads(resp_text)
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="ignore")
+            cf_err = _try_build_cloudflare_challenge_error(
+                status_code=exc.code,
+                url=url,
+                body_text=body,
+                headers=dict(getattr(exc, "headers", {}) or {}),
+            )
+            if cf_err:
+                raise Exception(json.dumps(cf_err, ensure_ascii=False)) from exc
             raise Exception(f"HTTP Error: {exc.code} {body}") from exc
         except URLError as exc:
             raise Exception(f"URL Error: {exc}") from exc
@@ -660,6 +745,14 @@ class SoraClient:
             return json.loads(resp_text)
         except HTTPError as exc:
             body_text = exc.read().decode("utf-8", errors="ignore")
+            cf_err = _try_build_cloudflare_challenge_error(
+                status_code=exc.code,
+                url=url,
+                body_text=body_text,
+                headers=dict(getattr(exc, "headers", {}) or {}),
+            )
+            if cf_err:
+                raise Exception(json.dumps(cf_err, ensure_ascii=False)) from exc
             raise Exception(f"HTTP Error: {exc.code} {body_text}") from exc
         except URLError as exc:
             raise Exception(f"URL Error: {exc}") from exc

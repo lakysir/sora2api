@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   const $ = (id) => document.getElementById(id);
 
   const btnSend = $('btnSend');
@@ -743,6 +743,20 @@
     const param = err && err.param ? String(err.param) : '';
     const msg = err && err.message ? String(err.message) : '';
     const merged = (msg || text || '').trim();
+
+    // 典型：Cloudflare challenge（结构化错误：后端已识别，不再依赖 HTML 关键字）
+    if (code === 'cf_challenge_403' || code === 'cf_shield_429') {
+      const details = err && err.details ? err.details : null;
+      const ray = details && details.cf_ray ? String(details.cf_ray) : '';
+      const hint = code === 'cf_challenge_403' ? 'Cloudflare 挑战拦截（403）' : 'Cloudflare 限流/拦截（429）';
+      const base = merged || hint;
+      const extra = ray ? `\n（cf-ray=${ray}）` : '';
+      return {
+        type: 'error',
+        title: 'Cloudflare 拦截',
+        message: `${base}${extra}\n解决：更换更“干净”的出口 IP/代理，或降低并发与请求频率。`
+      };
+    }
 
     // 典型：地区限制（用户最常见困惑点之一）
     const ccFromText = (() => {

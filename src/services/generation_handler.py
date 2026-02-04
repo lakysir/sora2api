@@ -2024,12 +2024,15 @@ class GenerationHandler:
             except:
                 pass
 
-            # Check for CF shield/429 error
+            # Check for Cloudflare challenge/rate-limit errors
             is_cf_or_429 = False
+            cf_status_code: Optional[int] = None
             if error_response and isinstance(error_response, dict):
                 error_info = error_response.get("error", {})
-                if error_info.get("code") == "cf_shield_429":
+                code = error_info.get("code")
+                if code in ("cf_shield_429", "cf_challenge_403"):
                     is_cf_or_429 = True
+                    cf_status_code = 429 if code == "cf_shield_429" else 403
 
             # Log failed character creation
             duration = time.time() - start_time
@@ -2044,7 +2047,7 @@ class GenerationHandler:
                     "success": False,
                     "error": str(e)
                 },
-                status_code=429 if is_cf_or_429 else 500,
+                status_code=cf_status_code if is_cf_or_429 and cf_status_code else 500,
                 duration=duration
             )
 
@@ -2058,7 +2061,7 @@ class GenerationHandler:
 
             debug_logger.log_error(
                 error_message=f"Character creation failed: {str(e)}",
-                status_code=429 if is_cf_or_429 else 500,
+                status_code=cf_status_code if is_cf_or_429 and cf_status_code else 500,
                 response_text=str(e)
             )
             raise
@@ -2262,12 +2265,15 @@ class GenerationHandler:
             except:
                 pass
 
-            # Check for CF shield/429 error
+            # Check for Cloudflare challenge/rate-limit errors
             is_cf_or_429 = False
+            cf_status_code: Optional[int] = None
             if error_response and isinstance(error_response, dict):
                 error_info = error_response.get("error", {})
-                if error_info.get("code") == "cf_shield_429":
+                code = error_info.get("code")
+                if code in ("cf_shield_429", "cf_challenge_403"):
                     is_cf_or_429 = True
+                    cf_status_code = 429 if code == "cf_shield_429" else 403
 
             # Record error (check if it's an overload error or CF/429 error)
             if token_obj:
@@ -2278,7 +2284,7 @@ class GenerationHandler:
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
             debug_logger.log_error(
                 error_message=f"Character and video generation failed: {str(e)}",
-                status_code=429 if is_cf_or_429 else 500,
+                status_code=cf_status_code if is_cf_or_429 and cf_status_code else 500,
                 response_text=str(e)
             )
             raise
@@ -2371,12 +2377,15 @@ class GenerationHandler:
             except:
                 pass
 
-            # Check for CF shield/429 error
+            # Check for Cloudflare challenge/rate-limit errors
             is_cf_or_429 = False
+            cf_status_code: Optional[int] = None
             if error_response and isinstance(error_response, dict):
                 error_info = error_response.get("error", {})
-                if error_info.get("code") == "cf_shield_429":
+                code = error_info.get("code")
+                if code in ("cf_shield_429", "cf_challenge_403"):
                     is_cf_or_429 = True
+                    cf_status_code = 429 if code == "cf_shield_429" else 403
 
             # Record error (check if it's an overload error or CF/429 error)
             if token_obj:
@@ -2387,7 +2396,7 @@ class GenerationHandler:
                     await self.token_manager.record_error(token_obj.id, is_overload=is_overload)
             debug_logger.log_error(
                 error_message=f"Remix generation failed: {str(e)}",
-                status_code=429 if is_cf_or_429 else 500,
+                status_code=cf_status_code if is_cf_or_429 and cf_status_code else 500,
                 response_text=str(e)
             )
             raise
