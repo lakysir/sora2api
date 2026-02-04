@@ -1152,7 +1152,7 @@
     </div>
 
     <script>
-        let allTokens=[],currentPage=1,pageSize=20,selectedTokenIds=new Set(),currentStatusFilter='',allProxyUrls=[],proxySelectTargetInputId='';
+        let allTokens=[],currentPage=1,pageSize=20,selectedTokenIds=new Set(),currentStatusFilter='',allProxyUrls=[],proxySelectTargetInputId='',proxySelectCurrentValue='';
         const $=(id)=>document.getElementById(id),
         checkAuth=()=>{const t=localStorage.getItem('adminToken');return t||(location.href='/login',null),t},
         apiRequest=async(url,opts={})=>{const t=checkAuth();if(!t)return null;const r=await fetch(url,{...opts,headers:{...opts.headers,Authorization:`Bearer ${t}`,'Content-Type':'application/json'}});return r.status===401?(localStorage.removeItem('adminToken'),location.href='/login',null):r},
@@ -1354,6 +1354,8 @@
 
         async function openProxySelectModalByInputId(inputId){
             proxySelectTargetInputId=inputId||'';
+            const currentInput=proxySelectTargetInputId?$(proxySelectTargetInputId):null;
+            proxySelectCurrentValue=(currentInput?String(currentInput.value||''):'').trim();
             $('proxySelectModal').classList.remove('hidden');
             if(!Array.isArray(allProxyUrls)||allProxyUrls.length===0){
                 await loadProxyUrls();
@@ -1364,6 +1366,7 @@
         function closeProxySelectModal(){
             $('proxySelectModal').classList.add('hidden');
             proxySelectTargetInputId='';
+            proxySelectCurrentValue='';
         }
 
         function renderProxySelectTable(){
@@ -1374,12 +1377,16 @@
                 tb.innerHTML='<tr><td class="py-3 px-3 text-xs text-muted-foreground" colspan="3">暂无代理地址，请先在“代理网址管理”里新增</td></tr>';
                 return;
             }
+            const normalize=(v)=>String(v||'').trim();
             tb.innerHTML=rows.map(p=>{
                 const url=(p.proxy_url||'');
                 const safeUrl=url.replace(/'/g,"\\'");
-                return `<tr class="hover:bg-accent cursor-pointer" onclick="selectProxyUrl('${safeUrl}')">
+                const isSelected=proxySelectCurrentValue && normalize(url)===normalize(proxySelectCurrentValue);
+                const rowClass=isSelected?'bg-primary/10':'hover:bg-accent';
+                const checkHtml=isSelected?`<span class="text-primary font-semibold mr-2">✓</span>`:'';
+                return `<tr class="${rowClass} cursor-pointer" onclick="selectProxyUrl('${safeUrl}')">
                     <td class="py-2.5 px-3 text-xs text-muted-foreground">${p.id}</td>
-                    <td class="py-2.5 px-3 text-xs font-mono">${url}</td>
+                    <td class="py-2.5 px-3 text-xs font-mono">${checkHtml}${url}</td>
                     <td class="py-2.5 px-3 text-xs text-muted-foreground">${p.remark||'-'}</td>
                 </tr>`;
             }).join('');
