@@ -1071,8 +1071,7 @@ class SoraClient:
             sentinel_token, user_agent = await self._generate_sentinel_token(
                 token=token,
                 user_agent=user_agent,
-                proxy_url=sentinel_proxy_url,
-                token_id=token_id,
+                proxy_url=sentinel_proxy_url
             )
 
         # First attempt with cached/generated token
