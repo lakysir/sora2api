@@ -1468,18 +1468,21 @@
             }
         }
 
-        // 自适应生成面板 iframe 高度（保留：用于 generate.html 主动上报高度时兼容旧行为）
+        // 自适应生成面板 iframe 高度（兼容旧布局）
+        // 注意：当前 manage 页的生成面板采用“固定可视高度 + iframe 内部滚动”。
+        // 如果这里去动态增大 iframe 高度，会导致外层容器裁切，出现“底部任务面板被遮挡/无法滚动”的问题。
         window.addEventListener('message', (event) => {
             const data = event.data || {};
-            if (data.type === 'sora-generate-height' && typeof data.height === 'number') {
-                const iframe = document.getElementById('generateFrame');
-                if (iframe) {
-                    // 由于生成面板现在使用固定可视高度 + iframe 内部滚动，这里仅做兜底：
-                    // 如果 iframe 当前高度被外部样式意外改小，则提升最小高度，避免内容被截断。
-                    const minH = Math.max(560, Math.ceil(data.height) + 8);
-                    iframe.style.minHeight = `${minH}px`;
-                }
-            }
+            if (data.type !== 'sora-generate-height' || typeof data.height !== 'number') return;
+
+            // 新布局：存在 generateShell 即认为是固定高度嵌入模式，忽略高度上报
+            if (document.getElementById('generateShell')) return;
+
+            // 旧布局（如果未来又回退到自适应高度 iframe，可继续使用）
+            const iframe = document.getElementById('generateFrame');
+            if (!iframe) return;
+            const nextH = Math.max(560, Math.ceil(data.height) + 8);
+            iframe.style.height = `${nextH}px`;
         });
         // 点击页面其他地方关闭筛选下拉菜单
         document.addEventListener('click', (e) => {
