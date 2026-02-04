@@ -1533,7 +1533,10 @@ async def cancel_task(task_id: str, token: str = Depends(verify_admin_token)):
 @router.get("/api/admin/logs/download")
 async def download_debug_logs(token: str = Depends(verify_admin_token)):
     """Download debug logs file (logs.txt)"""
-    log_file = Path("logs.txt")
+    # Prefer new logs directory, fallback to legacy root logs.txt
+    log_file = Path("logs") / "logs.txt"
+    if not log_file.exists():
+        log_file = Path("logs.txt")
 
     if not log_file.exists():
         raise HTTPException(status_code=404, detail="日志文件不存在")

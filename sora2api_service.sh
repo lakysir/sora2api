@@ -4,6 +4,8 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PID_FILE="${PID_FILE:-$APP_DIR/sora2api.pid}"
 LOG_FILE="${LOG_FILE:-$APP_DIR/sora2api.out}"
+LOGS_DIR="${LOGS_DIR:-$APP_DIR/logs}"
+DEBUG_LOG_FILE="${DEBUG_LOG_FILE:-$LOGS_DIR/logs.txt}"
 
 # 优先使用项目内虚拟环境，其次使用系统 python3
 PYTHON_BIN="${PYTHON_BIN:-}"
@@ -23,6 +25,27 @@ is_running() {
   kill -0 "$pid" >/dev/null 2>&1
 }
 
+rotate_and_truncate() {
+  # 轮转单个文件到 logs/ 目录，并把原文件置空
+  # - 若文件不存在：创建空文件
+  # - 若文件为空：仅置空（保持存在）
+  local src="$1"
+  local prefix="$2"
+
+  mkdir -p "$LOGS_DIR"
+
+  if [[ -f "$src" ]] && [[ -s "$src" ]]; then
+    local ts dest
+    ts="$(date +"%Y%m%d_%H%M%S")"
+    dest="$LOGS_DIR/${prefix}_${ts}_$RANDOM.txt"
+    mv "$src" "$dest"
+    echo "已备份旧日志: $src -> $dest"
+  fi
+
+  # 创建/置空当前日志文件
+  : > "$src"
+}
+
 start() {
   if is_running; then
     echo "sora2api 已在运行 (pid=$(cat "$PID_FILE"))"
@@ -30,6 +53,11 @@ start() {
   fi
 
   cd "$APP_DIR"
+
+  # 启动前：备份并清空 debug 日志（logs.txt），方便本次启动排查
+  rotate_and_truncate "$DEBUG_LOG_FILE" "logs"
+
+  # 启动前：清空服务输出日志（sora2api.out）
   : > "$LOG_FILE"
 
   # 生产环境：后台运行 + 输出到日志文件
@@ -109,6 +137,8 @@ usage() {
   PYTHON_BIN=/path/to/python
   PID_FILE=/path/to/sora2api.pid
   LOG_FILE=/path/to/sora2api.out
+  DEBUG_LOG_FILE=/path/to/logs.txt
+  LOGS_DIR=/path/to/logs_dir
 EOF
 }
 

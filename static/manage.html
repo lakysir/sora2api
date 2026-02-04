@@ -617,7 +617,7 @@
                                 <input type="checkbox" id="cfgDebugEnabled" class="h-4 w-4 rounded border-input" onchange="toggleDebugMode()">
                                 <span class="text-sm font-medium">启用调试模式</span>
                             </label>
-                            <p class="text-xs text-muted-foreground mt-2">开启后，详细的上游API请求和响应日志将写入 <code class="bg-muted px-1 py-0.5 rounded">logs.txt</code> 文件，立即生效</p>
+                            <p class="text-xs text-muted-foreground mt-2">开启后，详细的上游API请求和响应日志将写入 <code class="bg-muted px-1 py-0.5 rounded">logs/logs.txt</code> 文件，立即生效</p>
                         </div>
                         <div>
                             <button onclick="downloadDebugLogs()" class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 text-sm font-medium transition-colors">
@@ -680,9 +680,33 @@
             </div>
         </div>
 
-        <!-- 生成面板（单层嵌入，铺满主内容宽度） -->
-        <div id="panelGenerate" class="hidden" style="background: #ffffff;">
-            <iframe id="generateFrame" src="/static/generate.html" class="w-full" style="border: 0; background: #ffffff; display:block; width:100%; height: 800px;" loading="lazy"></iframe>
+        <!-- 生成面板（固定可视高度 + 内部滚动，避免小屏被截断） -->
+        <div id="panelGenerate" class="hidden">
+            <div id="generateShell" class="rounded-lg border border-border bg-background overflow-hidden flex flex-col min-h-0"
+                 style="height: calc(100vh - 190px); min-height: 720px;">
+                <div class="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-background">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <h3 class="text-sm font-semibold whitespace-nowrap">生成面板</h3>
+                        <span class="text-xs text-muted-foreground truncate">如果看不到输入框/按钮，点“重置视图”即可回到顶部并重新布局</span>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <button onclick="resetGenerateView()" class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm">
+                            重置视图
+                        </button>
+                        <button onclick="reloadGenerateFrame()" class="inline-flex items-center justify-center rounded-md border border-input bg-background hover:bg-accent h-8 px-3 text-sm" title="重新加载生成面板">
+                            刷新
+                        </button>
+                        <button onclick="openGenerateNewTab()" class="inline-flex items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 h-8 px-3 text-sm" title="在新标签页打开">
+                            新窗口打开
+                        </button>
+                    </div>
+                </div>
+                <div id="generateFrameWrap" class="flex-1 min-h-0 bg-white">
+                    <iframe id="generateFrame" src="/static/generate.html" class="w-full h-full"
+                            style="border: 0; background: #ffffff; display:block; width:100%; height: 100%;"
+                            loading="lazy"></iframe>
+                </div>
+            </div>
         </div>
 
         <!-- 日志详情模态框 -->
@@ -1247,7 +1271,7 @@
         saveCallLogicConfig=async()=>{try{const mode=$('cfgCallLogicMode').value||'default';const r=await apiRequest('/api/call-logic/config',{method:'POST',body:JSON.stringify({call_mode:mode})});if(!r)return;const d=await r.json();if(d.success){showToast('调用逻辑配置保存成功','success')}else{showToast('保存失败','error')}}catch(e){showToast('保存失败: '+e.message,'error')}},
         loadPowProxyConfig=async()=>{try{const r=await apiRequest('/api/pow-proxy/config');if(!r)return;const d=await r.json();if(d.success&&d.config){$('cfgPowProxyEnabled').checked=d.config.pow_proxy_enabled||false;$('cfgPowProxyUrl').value=d.config.pow_proxy_url||'';$('cfgPowSentinelUseChrome').checked=d.config.pow_sentinel_use_chrome!==undefined?!!d.config.pow_sentinel_use_chrome:true}else{console.error('POW配置数据格式错误:',d)}}catch(e){console.error('加载POW配置失败:',e)}},
         savePowProxyConfig=async()=>{try{const r=await apiRequest('/api/pow-proxy/config',{method:'POST',body:JSON.stringify({pow_proxy_enabled:$('cfgPowProxyEnabled').checked,pow_proxy_url:$('cfgPowProxyUrl').value.trim(),pow_sentinel_use_chrome:$('cfgPowSentinelUseChrome').checked})});if(!r)return;const d=await r.json();if(d.success){showToast('POW配置保存成功','success')}else{showToast('保存失败','error')}}catch(e){showToast('保存失败: '+e.message,'error')}},
-        switchTab=t=>{const cap=n=>n.charAt(0).toUpperCase()+n.slice(1);['tokens','settings','logs','generate'].forEach(n=>{const active=n===t;$(`panel${cap(n)}`).classList.toggle('hidden',!active);$(`tab${cap(n)}`).classList.toggle('border-primary',active);$(`tab${cap(n)}`).classList.toggle('text-primary',active);$(`tab${cap(n)}`).classList.toggle('border-transparent',!active);$(`tab${cap(n)}`).classList.toggle('text-muted-foreground',!active)});if(t==='settings'){loadAdminConfig();loadProxyConfig();loadProxyUrls();loadPowProxyConfig();loadWatermarkFreeConfig();loadCacheConfig();loadGenerationTimeout();loadATAutoRefreshConfig();loadCallLogicConfig()}else if(t==='logs'){loadLogs()}};
+        switchTab=t=>{const cap=n=>n.charAt(0).toUpperCase()+n.slice(1);['tokens','settings','logs','generate'].forEach(n=>{const active=n===t;$(`panel${cap(n)}`).classList.toggle('hidden',!active);$(`tab${cap(n)}`).classList.toggle('border-primary',active);$(`tab${cap(n)}`).classList.toggle('text-primary',active);$(`tab${cap(n)}`).classList.toggle('border-transparent',!active);$(`tab${cap(n)}`).classList.toggle('text-muted-foreground',!active)});if(t==='settings'){loadAdminConfig();loadProxyConfig();loadProxyUrls();loadPowProxyConfig();loadWatermarkFreeConfig();loadCacheConfig();loadGenerationTimeout();loadATAutoRefreshConfig();loadCallLogicConfig()}else if(t==='logs'){loadLogs()}else if(t==='generate'){resetGenerateView()}};
 
         // 代理网址管理 & 选择（全局函数，供 HTML onclick 调用）
         async function loadProxyUrls(){
@@ -1406,14 +1430,54 @@
             closeProxySelectModal();
             showToast(url?'已选择代理':'已清空代理','success');
         }
-        // 自适应生成面板 iframe 高度
+        // 生成面板：重置视图/刷新/新窗口
+        function openGenerateNewTab(){
+            window.open('/static/generate.html','_blank');
+        }
+
+        function reloadGenerateFrame(){
+            const iframe = document.getElementById('generateFrame');
+            if(!iframe) return;
+            try{
+                // 同源情况下直接 reload
+                iframe.contentWindow && iframe.contentWindow.location && iframe.contentWindow.location.reload();
+            }catch(e){
+                // 兜底：重设 src
+                iframe.src = iframe.src;
+            }
+        }
+
+        function _scrollToPanel(panelId){
+            const el = document.getElementById(panelId);
+            if(!el) return;
+            // 预留 header 高度与间距，避免被 sticky header 遮挡
+            const top = el.getBoundingClientRect().top + window.scrollY - 72;
+            window.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+        }
+
+        function resetGenerateView(){
+            // 切到生成 tab 时：让用户一定能看到顶部输入区
+            _scrollToPanel('panelGenerate');
+            const iframe = document.getElementById('generateFrame');
+            if(iframe){
+                try{
+                    iframe.contentWindow && iframe.contentWindow.scrollTo(0,0);
+                }catch(e){
+                    // ignore
+                }
+            }
+        }
+
+        // 自适应生成面板 iframe 高度（保留：用于 generate.html 主动上报高度时兼容旧行为）
         window.addEventListener('message', (event) => {
             const data = event.data || {};
             if (data.type === 'sora-generate-height' && typeof data.height === 'number') {
                 const iframe = document.getElementById('generateFrame');
                 if (iframe) {
-                    const nextH = Math.max(560, Math.ceil(data.height) + 8);
-                    iframe.style.height = `${nextH}px`;
+                    // 由于生成面板现在使用固定可视高度 + iframe 内部滚动，这里仅做兜底：
+                    // 如果 iframe 当前高度被外部样式意外改小，则提升最小高度，避免内容被截断。
+                    const minH = Math.max(560, Math.ceil(data.height) + 8);
+                    iframe.style.minHeight = `${minH}px`;
                 }
             }
         });

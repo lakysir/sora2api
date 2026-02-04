@@ -10,14 +10,34 @@ class DebugLogger:
     """Debug logger for API requests and responses"""
     
     def __init__(self):
-        self.log_file = Path("logs.txt")
+        self.log_dir = Path("logs")
+        self.log_file = self.log_dir / "logs.txt"
         self._setup_logger()
     
     def _setup_logger(self):
         """Setup file logger"""
-        # Clear log file on startup
-        if self.log_file.exists():
-            self.log_file.unlink()
+        # Ensure log dir exists
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Startup rotation: backup old logs, then truncate
+        try:
+            if self.log_file.exists() and self.log_file.stat().st_size > 0:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup = self.log_dir / f"logs_{ts}.txt"
+                # Avoid rare collision
+                if backup.exists():
+                    backup = self.log_dir / f"logs_{ts}_{int(datetime.now().timestamp()*1000)}.txt"
+                self.log_file.replace(backup)
+        except Exception:
+            # If rotation fails, fall back to truncation below
+            pass
+
+        # Truncate/create current log file
+        try:
+            self.log_file.write_text("", encoding="utf-8")
+        except Exception:
+            # Ignore: FileHandler below will try to create/open anyway
+            pass
 
         # Create logger
         self.logger = logging.getLogger("debug_logger")
